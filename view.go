@@ -267,11 +267,8 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, now time.Time) 
 	hoverFill(row, hovered, p.hover)
 	row.OnClick(func() { jumpToSession(c, s.ID) })
 
-	weight, color := 400, p.ink
-	switch s.State {
-	case monitor.Unread:
-		weight = 500
-	case monitor.Completed:
+	color := p.ink
+	if s.State == monitor.Completed {
 		color = p.sec
 	}
 	when := relativeTime(s.ActivityAt, now)
@@ -280,7 +277,7 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, now time.Time) 
 	}
 	row.Children(func() {
 		ui.Row(c).Width(dotColumnWidth).Center().Children(func() { statusDot(c, p, s.State) })
-		ui.Text(c, s.Title).SingleLine().Grow(1).MinWidth(0).FontSize(12).FontWeight(weight).TextColor(color)
+		ui.Text(c, s.Title).SingleLine().Grow(1).MinWidth(0).FontSize(12).TextColor(color)
 		trailing(c, p, hovered, when)
 	})
 }
