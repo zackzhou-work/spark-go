@@ -1,48 +1,50 @@
 # spark
 
-监控 Claude Desktop（Code 标签页）里各个会话的任务状态的 macOS 小窗。用 Go 和 [mygo](https://github.com/egoist/mygo) 的原生 UI 写成。
+A small macOS window that shows the live status of every session in the Code tab of Claude Desktop. Built with Go and the native UI of [mygo](https://github.com/egoist/mygo).
 
-## 状态来源
+<img src="docs/screenshot.png" alt="spark showing sessions grouped by project, each with a status dot" width="300">
 
-- **进程**：每个 claude 核心进程的环境变量 `CLAUDE_CODE_HOST_SESSION_ID` 对应桌面端的会话 ID，没有进程就是回合已结束。
-- **transcript**：读 `~/.claude/projects/<cwd>/<cliSessionId>.jsonl` 末尾。end_turn 或用户打断为回合结束；工具调用挂起为 Running；AskUserQuestion / ExitPlanMode 为 Waiting。
-- **hooks（可选）**：装上后"等待授权"由 Claude Code 直接报告，否则只能靠"工具挂起 45 秒无动静"推测。
-- **会话 JSON 的 `lastFocusedAt`**：回合结束后，`lastActivityAt` 比它新就是产出还没在桌面端看过，算 Unread。
+## Where the status comes from
 
-四种状态和桌面端侧栏那颗点一一对应：
+- **Processes**: each core `claude` process carries the desktop session ID in its `CLAUDE_CODE_HOST_SESSION_ID` environment variable. No process means the turn is over.
+- **Transcripts**: spark reads the tail of `~/.claude/projects/<cwd>/<cliSessionId>.jsonl`. `end_turn` or a user interrupt ends the turn; a pending tool call means Running; AskUserQuestion or ExitPlanMode means Waiting.
+- **Hooks (optional)**: with the hook installed, Claude Code reports permission prompts directly. Without it, spark can only guess them from a tool call that has been pending for 45 seconds with nothing happening.
+- **`lastFocusedAt` in the session JSON**: once a turn is over, a `lastActivityAt` newer than `lastFocusedAt` means you haven't looked at the result in the desktop app yet, so it shows as Unread.
 
-| spark | 桌面端侧栏 | 含义 |
+The four states match the dot in the desktop app's sidebar:
+
+| spark | Desktop sidebar | Meaning |
 | --- | --- | --- |
-| 灰色呼吸 | 实心深点 | 回合进行中 |
-| 红点 | （仍是实心深点） | 卡在授权框或模型的提问上 |
-| 黄点 | 黄点 | 回合结束，产出还没看过 |
-| 空心灰圈 | 空心圈 | 回合结束且已经看过 |
+| Breathing gray | Solid dark dot | The turn is in progress |
+| Red | (still a solid dark dot) | Stuck on a permission prompt or a question from the model |
+| Yellow | Yellow | The turn is over and you haven't seen the result |
+| Hollow gray ring | Hollow ring | The turn is over and you've seen it |
 
-侧栏对"等授权"不单独标色，这一档是 spark 多出来的信息，所以给了红色而不是黄色。
+The sidebar doesn't mark "waiting for permission" separately. spark adds it, in red rather than yellow, because it needs you to act.
 
-扫描由文件监听驱动（会话目录、transcript 目录、hooks 目录），另有 5 秒定时兜底处理进程退出等无文件事件的变化。
+File watching on the session, transcript and hooks directories drives the scans, and a 5-second timer catches changes that touch no file, such as a process exiting.
 
-## 点击跳转
+## Jumping to a session
 
-单击任意一行（包括已完成的会话），Claude Desktop 会切到对应的 Code 会话并置前，用的是它自己的私有深链：
+Clicking any row, finished sessions included, brings Claude Desktop to the front on that Code session, through its private deep link:
 
 ```
 claude://code/continue?session=<sessionId>&source=spark
 ```
 
-`sessionId` 就是会话 JSON 里的那个 `local_<uuid>`，不需要任何映射。窗口的唤起和置前由 Claude Desktop 自己完成，spark 只负责打开这条 URL。
+`sessionId` is the `local_<uuid>` from the session JSON, so no mapping is needed. Claude Desktop raises and focuses its own window; spark only opens the URL.
 
-**这条链没有公开契约**，是从 Claude.app 2.2553.1 的 `app.asar` 路由代码里读出来的，随时可能变：
+**The link has no public contract.** It was read from the routing code in the `app.asar` of Claude.app 2.2553.1 and may change at any time:
 
-- 应用侧的校验正则是 `^local_[A-Za-z0-9-]{1,64}$`，`internal/monitor/deeplink_test.go` 钉住了同一套规则。会话 ID 对不上格式时不会发出请求，只打一行 `[Jump]` 日志——那通常就是格式变了的信号。
-- 深链整体受一个远端开关和 `~/Library/Application Support/Claude/config.json` 里的 `disableDeepLinks` 管控，被关掉时点击不会有任何反应。
-- 如果哪天 `code/continue` 不灵了，还有一条 `claude://resume?session=<cliSessionId>`（裸 UUID）可以试。它走的是"导入 CLI 会话"的路径，可能产生重复会话，所以没有拿来做自动兜底。
+- The app validates the ID with `^local_[A-Za-z0-9-]{1,64}$`, and `internal/monitor/deeplink_test.go` pins the same rule. An ID that doesn't match is never sent; spark logs a `[Jump]` line instead, which usually means the format changed.
+- Deep links as a whole are gated by a remote flag and by `disableDeepLinks` in `~/Library/Application Support/Claude/config.json`. When they're off, clicks do nothing.
+- If `code/continue` stops working, `claude://resume?session=<cliSessionId>` (a bare UUID) is another option. It goes through the "import a CLI session" path and may create a duplicate session, so spark doesn't fall back to it automatically.
 
-**多账号未处理**：spark 会扫描所有 `<账号>/<组织>` 的会话，而深链只能命中当前登录账号的那些。
+**Multiple accounts aren't handled**: spark scans the sessions of every `<account>/<org>`, but the deep link only reaches those of the account signed in now.
 
-## 安装 hooks
+## Installing the hook
 
-先把脚本复制到固定位置，再把下面内容合并进 `~/.claude/settings.json`。脚本只把事件写到 `~/.config/spark/hooks/<session_id>.json`，不影响 Claude Code 的任何决策。
+Copy the script to a fixed location, then merge the settings below into `~/.claude/settings.json`. The script only writes each event to `~/.config/spark/hooks/<session_id>.json` and never affects what Claude Code decides.
 
 ```bash
 mkdir -p ~/.config/spark && cp hooks/spark-hook.sh ~/.config/spark/spark-hook.sh && chmod +x ~/.config/spark/spark-hook.sh
@@ -62,11 +64,11 @@ mkdir -p ~/.config/spark && cp hooks/spark-hook.sh ~/.config/spark/spark-hook.sh
 }
 ```
 
-把 `<you>` 换成你的用户名。
+Replace `<you>` with your user name.
 
-## 开发
+## Development
 
-Go 版本由 [mise](https://mise.jdx.dev) 管理（`.mise.toml`）。
+[mise](https://mise.jdx.dev) pins the Go version (`.mise.toml`).
 
 ```bash
 go run .
@@ -80,14 +82,18 @@ go test ./...
 SPARK_REAL=1 go test ./internal/monitor -run TestScanRealSessions -v
 ```
 
-最后这条会打印本机扫描到的真实会话和状态。
+The last one prints the sessions and states spark finds on this machine.
 
-## 打包成 .app
+## Building the app
 
 ```bash
 go tool mygo build -skip-dmg
 ```
 
-产物在 `build/darwin-arm64/Spark.app`，bundle id 是 `dev.spark.app`，图标取自 `resources/icon.png`。窗口位置和大小记在 `~/Library/Application Support/Spark/window-state.json`。
+The app lands in `build/darwin-arm64/Spark.app`, with the bundle ID `dev.spark.app` and the icon from `resources/icon.png`. The window's position and size are kept in `~/Library/Application Support/Spark/window-state.json`.
 
-没有设 `LSUIElement`，所以它是个正常的 Dock 应用；想改成纯菜单栏常驻，在 `mygo.json` 里加 `"macos": {"infoPlist": {"LSUIElement": true}}`。
+`LSUIElement` isn't set, so spark is a normal Dock app. To keep it in the menu bar only, add `"macos": {"infoPlist": {"LSUIElement": true}}` to `mygo.json`.
+
+## License
+
+[MIT](LICENSE)
