@@ -4,6 +4,7 @@ import (
 	"log"
 	"reflect"
 	"sync/atomic"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -17,8 +18,8 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Width:     300,
-			Height:    440,
+			Width:     320,
+			Height:    480,
 			MinWidth:  240,
 			MinHeight: 280,
 			StateKey:  "main",
@@ -34,6 +35,15 @@ func main() {
 		var closed atomic.Bool
 		win.OnClosed(func() { closed.Store(true) })
 		last := a.groups
+		// 列表里的"几分钟前"不随文件变化刷新，按分钟重建一次视图
+		go func() {
+			for range time.Tick(time.Minute) {
+				if closed.Load() {
+					return
+				}
+				win.Update(func() {})
+			}
+		}()
 		monitor.Watch(scanner, func(groups []monitor.ProjectGroup) bool {
 			if closed.Load() {
 				return false

@@ -168,6 +168,20 @@ func TestGroupsPutActiveProjectsFirstAndSortSessions(t *testing.T) {
 	}
 }
 
+func TestSplitWaitingLiftsWaitingSessionsOut(t *testing.T) {
+	item := func(id string, state TaskState) SessionItem { return SessionItem{ID: id, State: state} }
+	waiting, rest := SplitWaiting([]ProjectGroup{
+		{ProjectName: "acme", Sessions: []SessionItem{item("a1", Running), item("a2", Waiting)}},
+		{ProjectName: "docs", Sessions: []SessionItem{item("d1", Waiting)}},
+	})
+	if len(waiting) != 2 || waiting[0].ID != "a2" || waiting[0].ProjectName != "acme" || waiting[1].ID != "d1" {
+		t.Errorf("waiting %+v", waiting)
+	}
+	if len(rest) != 1 || rest[0].ProjectName != "acme" || len(rest[0].Sessions) != 1 || rest[0].Sessions[0].ID != "a1" {
+		t.Errorf("rest %+v", rest)
+	}
+}
+
 // SPARK_REAL=1 go test -run TestScanRealSessions -v 打印本机真实会话，用来核对扫描结果
 func TestScanRealSessions(t *testing.T) {
 	if os.Getenv("SPARK_REAL") == "" {

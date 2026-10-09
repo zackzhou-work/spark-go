@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
 	"log"
 	"math"
 	"time"
@@ -17,32 +18,41 @@ var (
 	pinFilledSVG []byte
 	//go:embed icons/pin-outline.svg
 	pinOutlineSVG []byte
-	//go:embed icons/folder.svg
-	folderSVG []byte
-	//go:embed icons/jump.svg
-	jumpSVG []byte
 	//go:embed icons/resize-grip.svg
 	resizeGripSVG []byte
 
 	pinFilledIcon  = ui.MustParseSVG(pinFilledSVG)
 	pinOutlineIcon = ui.MustParseSVG(pinOutlineSVG)
-	folderIcon     = ui.MustParseSVG(folderSVG)
-	jumpIcon       = ui.MustParseSVG(jumpSVG)
 	resizeGripIcon = ui.MustParseSVG(resizeGripSVG)
 )
 
+// palette 是暖色单色调的一套颜色，亮暗两套跟随系统外观
+type palette struct {
+	bg, track, thumb ui.Color
+	ink, sec         ui.Color
+	border, warm     ui.Color
+	ring             ui.Color
+	hover, pinHover  ui.Color
+	waiting, unread  ui.Color
+	buttonBorder     ui.Color
+}
+
+func newPalette(bg, track, thumb, ink, sec, warm, waiting, unread string, hover, pinHover float32) palette {
+	inkColor := ui.Hex(ink)
+	return palette{
+		bg: ui.Hex(bg), track: ui.Hex(track), thumb: ui.Hex(thumb),
+		ink: inkColor, sec: ui.Hex(sec),
+		border: inkColor.Alpha(0.1), warm: ui.Hex(warm),
+		ring:  inkColor.Alpha(0.45),
+		hover: inkColor.Alpha(hover), pinHover: inkColor.Alpha(pinHover),
+		waiting: ui.Hex(waiting), unread: ui.Hex(unread),
+		buttonBorder: inkColor.Alpha(0.2),
+	}
+}
+
 var (
-	colorCard       = ui.Hex("#FFFFFF")
-	colorCardEdge   = ui.Hex("#E8E8E8")
-	colorTrack      = ui.Hex("#EDEDED")
-	colorHover      = ui.Hex("#F3F4F6")
-	colorText       = ui.Hex("#1F2328")
-	colorTextStrong = ui.Hex("#111827")
-	colorTextMuted  = ui.Hex("#6B7280")
-	colorTextFaint  = ui.Hex("#9CA3AF")
-	colorRing       = ui.Hex("#D1D5DB")
-	colorWaiting    = ui.Hex("#EF4444")
-	colorUnread     = ui.Hex("#F59E0B")
+	lightPalette = newPalette("#FAF9F6", "#EBEAE5", "#FFFFFF", "#26251E", "#68675F", "#F3EDE6", "#CF2D56", "#E2A110", 0.05, 0.06)
+	darkPalette  = newPalette("#14120B", "#24221B", "#35332B", "#EDECEC", "#A3A19B", "#221C15", "#E0446A", "#F0B429", 0.07, 0.08)
 )
 
 const (
@@ -51,21 +61,24 @@ const (
 
 	// 切换 Today / All 的滑动时长，滑块和翻页共用
 	slideDuration = 180 * time.Millisecond
-	segmentWidth  = 48
-	thumbRadius   = 5
+	segmentWidth  = 56
+	segmentHeight = 22
+	thumbRadius   = 4
 
-	headerHeight     = 20
-	rowHeight        = 24
-	groupGap         = 10
-	rowGap           = 2
-	iconColumnWidth  = 24
-	iconCellSize     = 12
-	rowRadius        = 6
-	jumpFadeWidth    = 48
+	monoFont         = "SF Mono, Menlo, monospace"
+	titleBarHeight   = 44
+	headerHeight     = 22
+	rowHeight        = 26
+	rowRadius        = 4
+	groupGap         = 12
+	rowGap           = 1
+	dotColumnWidth   = 8
+	dotSize          = 7
 	trafficLightRoom = 60
 
 	breathPeriod = 2 * time.Second
 	breathTick   = 80 * time.Millisecond
+	breathLow    = 0.22
 )
 
 type app struct {
@@ -77,29 +90,33 @@ type app struct {
 
 func (a *app) view(c *ui.Context) {
 	c.Root().Background(ui.Transparent)
+	p := lightPalette
+	if c.Theme().Dark {
+		p = darkPalette
+	}
 	today := monitor.TodayGroups(a.groups)
 	visible := a.groups
 	if a.filter == filterToday {
 		visible = today
 	}
 
-	ui.Column(c).Fill().Radius(12).Border(1, colorCardEdge).Background(colorCard).Clip().Children(func() {
-		a.titleBar(c)
-		a.filterBar(c, monitor.CountSessions(visible))
-		a.pages(c, today)
-		ui.Box(c).Absolute().Bottom(2).Right(2).Size(14, 14).Center().Cursor(ui.CursorResizeNWSE).Children(func() {
-			ui.Icon(c, resizeGripIcon).Size(10, 10).TextColor(colorRing)
+	ui.Column(c).Fill().Radius(12).Border(1, p.border).Background(p.bg).TextColor(p.ink).Clip().Children(func() {
+		a.titleBar(c, p)
+		a.filterBar(c, p, monitor.CountSessions(visible))
+		a.pages(c, p, today)
+		ui.Box(c).Absolute().Bottom(3).Right(3).Size(14, 14).Center().Cursor(ui.CursorResizeNWSE).Children(func() {
+			ui.Icon(c, resizeGripIcon).Size(10, 10).TextColor(p.sec.Alpha(0.5))
 		})
 	})
 }
 
-func (a *app) titleBar(c *ui.Context) {
-	ui.Row(c).Padding(12, 14, 8, 14).DragWindow().Children(func() {
+func (a *app) titleBar(c *ui.Context, p palette) {
+	ui.Row(c).Height(titleBarHeight).Padding(0, 10, 0, 14).DragWindow().Children(func() {
 		ui.Box(c).Size(trafficLightRoom, 22)
 		ui.Spacer(c)
-		pin := ui.Box(c).Size(22, 22).Center().Radius(6).Cursor(ui.CursorPointer).Label("Pin window")
+		pin := ui.Box(c).Size(28, 28).Center().Radius(4).Cursor(ui.CursorPointer).Label("Keep window on top")
 		if pin.Hovered() {
-			pin.Background(colorHover)
+			pin.Background(p.pinHover)
 		}
 		pin.OnClick(func() {
 			a.pinned = !a.pinned
@@ -109,36 +126,36 @@ func (a *app) titleBar(c *ui.Context) {
 		})
 		pin.Children(func() {
 			if a.pinned {
-				ui.Icon(c, pinFilledIcon).Size(13, 13).TextColor(colorText)
+				ui.Icon(c, pinFilledIcon).Size(14, 14).TextColor(p.ink)
 			} else {
-				ui.Icon(c, pinOutlineIcon).Size(13, 13).TextColor(colorTextFaint)
+				ui.Icon(c, pinOutlineIcon).Size(14, 14).TextColor(p.sec)
 			}
 		})
 	})
 }
 
-func (a *app) filterBar(c *ui.Context, count int) {
-	ui.Row(c).Padding(1, 14, 6, 14).Justify(ui.SpaceBetween).Children(func() {
+func (a *app) filterBar(c *ui.Context, p palette, count int) {
+	ui.Row(c).Padding(0, 14, 10, 14).Justify(ui.SpaceBetween).Children(func() {
 		seg := ui.SegmentedBase(c, &a.filter, 2)
-		track := seg.Track.Padding(2).Radius(thumbRadius + 2).Background(colorTrack).Label("Filter")
+		track := seg.Track.Padding(2).Radius(6).Background(p.track).Label("Filter")
 		// 滑块画在轨道背景上而不是做成绝对定位的子元素：绝对定位的子元素总是盖在文字上面
-		x := track.AnimateWith("thumb", float32(2+a.filter*segmentWidth), slideDuration, ui.EaseInOut)
-		track.Draw(func(p *ui.Painter, r ui.Rect) {
-			thumb := ui.Rect{X: r.X + x, Y: r.Y + 2, W: segmentWidth, H: 20}
-			p.Shadow(thumb, thumbRadius, 0, 1, 2, 0, ui.RGBA(0, 0, 0, 0.05))
-			p.Fill(thumb, colorCard, thumbRadius)
+		x := track.AnimateWith("thumb", float32(2+a.filter*(segmentWidth+2)), slideDuration, ui.EaseInOut)
+		track.Draw(func(pt *ui.Painter, r ui.Rect) {
+			thumb := ui.Rect{X: r.X + x, Y: r.Y + 2, W: segmentWidth, H: segmentHeight}
+			pt.Fill(thumb, p.thumb, thumbRadius)
+			pt.Stroke(thumb, p.border, thumbRadius, 1)
 		})
-		track.Children(func() {
+		track.Gap(2).Children(func() {
 			for i, label := range []string{"Today", "All"} {
-				s := seg.Segment(i).Size(segmentWidth, 20).Center().Radius(thumbRadius).Cursor(ui.CursorPointer).Label(label)
+				s := seg.Segment(i).Size(segmentWidth, segmentHeight).Center().Radius(thumbRadius).Cursor(ui.CursorPointer).Label(label)
 				active := i == a.filter
-				color := colorTextMuted
+				color := p.sec
 				if active || s.Hovered() {
-					color = colorTextStrong
+					color = p.ink
 				}
 				weight := 400
 				if active {
-					weight = 600
+					weight = 500
 				}
 				s.Children(func() {
 					ui.Text(c, label).FontSize(11).FontWeight(weight).TextColor(color)
@@ -146,14 +163,19 @@ func (a *app) filterBar(c *ui.Context, count int) {
 			}
 		})
 
-		ui.Row(c).MinWidth(20).Height(18).Padding(0, 6).Radius(9).Background(colorTrack).Justify(ui.Center).Children(func() {
-			ui.Textf(c, "%d", count).FontSize(10).FontWeight(600).TextColor(colorTextMuted)
-		})
+		ui.Text(c, sessionCount(count)).FontSize(11).FontFeatures("tnum").TextColor(p.sec)
 	})
 }
 
+func sessionCount(n int) string {
+	if n == 1 {
+		return "1 session"
+	}
+	return fmt.Sprintf("%d sessions", n)
+}
+
 // pages 把两页并排放在一条轨道上，切换时整条轨道滑过去；静止时只建当前这一页
-func (a *app) pages(c *ui.Context, today []monitor.ProjectGroup) {
+func (a *app) pages(c *ui.Context, p palette, today []monitor.ProjectGroup) {
 	w, _ := c.Size()
 	pageWidth := max(w-2, 200)
 
@@ -170,27 +192,34 @@ func (a *app) pages(c *ui.Context, today []monitor.ProjectGroup) {
 		}
 		track.Left(offset).Children(func() {
 			if showToday {
-				a.page(c.Key("today"), today, filterToday, pageWidth)
+				a.page(c.Key("today"), p, today, filterToday, pageWidth)
 			}
 			if showAll {
-				a.page(c.Key("all"), a.groups, filterAll, pageWidth)
+				a.page(c.Key("all"), p, a.groups, filterAll, pageWidth)
 			}
 		})
 	})
 }
 
-func (a *app) page(c *ui.Context, groups []monitor.ProjectGroup, filter int, width float32) {
+func (a *app) page(c *ui.Context, p palette, groups []monitor.ProjectGroup, filter int, width float32) {
 	ui.Scroll(c).Width(width).Children(func() {
 		if len(groups) == 0 {
-			emptyState(c, filter)
+			a.emptyState(c, p, filter)
 			return
 		}
-		ui.Column(c).Margin(6, 10, 10, 10).Gap(groupGap).Children(func() {
-			for _, g := range groups {
+		now := time.Now()
+		waiting, rest := monitor.SplitWaiting(groups)
+		ui.Column(c).Padding(0, 8, 10, 8).Gap(groupGap).Children(func() {
+			if len(waiting) > 0 {
+				needsYou(c.Key("needs-you"), p, waiting, now)
+			}
+			for _, g := range rest {
 				ui.Column(c.Key(g.ProjectName)).Gap(rowGap).Children(func() {
-					projectHeader(c, g.ProjectName)
+					ui.Row(c).Height(headerHeight).Padding(0, 10).Children(func() {
+						ui.Text(c, g.ProjectName).SingleLine().MinWidth(0).Font(monoFont).FontSize(10.5).TextColor(p.sec)
+					})
 					for _, s := range g.Sessions {
-						sessionRow(c.Key(s.ID), s)
+						sessionRow(c.Key(s.ID), p, s, now)
 					}
 				})
 			}
@@ -198,60 +227,107 @@ func (a *app) page(c *ui.Context, groups []monitor.ProjectGroup, filter int, wid
 	})
 }
 
-func projectHeader(c *ui.Context, name string) {
-	ui.Row(c).Height(headerHeight).Children(func() {
-		iconCell(c, func() {
-			ui.Icon(c, folderIcon).Size(iconCellSize, iconCellSize).TextColor(colorTextFaint)
+// needsYou 把卡在授权或提问上的会话单独放在顶上，带上项目和原因
+func needsYou(c *ui.Context, p palette, sessions []monitor.PendingSession, now time.Time) {
+	ui.Column(c).Background(p.warm).Radius(6).Padding(6, 0, 4, 0).Label("Needs you").Children(func() {
+		ui.Row(c).Height(20).Padding(0, 10).Justify(ui.SpaceBetween).Children(func() {
+			ui.Text(c, "Needs you").FontSize(11).FontWeight(500)
+			ui.Textf(c, "%d", len(sessions)).FontSize(11).FontFeatures("tnum").TextColor(p.sec)
 		})
-		ui.Text(c, name).SingleLine().Grow(1).MinWidth(0).Padding(0, 6, 0, 1).FontSize(11).TextColor(colorTextFaint)
-	})
-}
-
-func sessionRow(c *ui.Context, s monitor.SessionItem) {
-	row := ui.Row(c).Height(rowHeight).Radius(rowRadius).Cursor(ui.CursorPointer).Label(s.Title)
-	hovered := row.Hovered()
-	if hovered {
-		row.Background(colorHover)
-	}
-	row.OnClick(func() { jumpToSession(c, s.ID) })
-	row.Children(func() {
-		iconCell(c, func() { statusDot(c, s.State) })
-		ui.Text(c, s.Title).SingleLine().Grow(1).MinWidth(0).Padding(0, 6, 0, 1).FontSize(12).TextColor(colorText)
-		if hovered {
-			// 跳转图标连同它底下的渐变一起盖在标题尾部，让长标题在图标左侧淡出
-			ui.Row(c).Absolute().Top(0).Bottom(0).Right(0).Width(jumpFadeWidth).Radius(0, rowRadius, rowRadius, 0).
-				Justify(ui.End).Padding(0, 6, 0, 0).
-				LinearGradient(ui.LinearGradient{From: colorHover.Alpha(0), To: colorHover, Angle: 90, End: 0.55}).
-				Children(func() {
-					ui.Icon(c, jumpIcon).Size(iconCellSize, iconCellSize).TextColor(colorTextFaint)
+		for _, s := range sessions {
+			row := ui.Row(c.Key(s.ID)).AlignItems(ui.Start).Gap(8).Padding(5, 10, 6, 10).Radius(rowRadius).
+				Cursor(ui.CursorPointer).Label(s.Title + ", needs you: " + s.WaitReason.String())
+			hovered := row.Hovered()
+			if hovered {
+				row.Background(p.hover)
+			}
+			row.OnClick(func() { jumpToSession(c, s.ID) })
+			row.Children(func() {
+				ui.Row(c).Size(dotColumnWidth, 17).Center().Children(func() {
+					ui.Box(c).Size(dotSize, dotSize).Radius(dotSize / 2).Background(p.waiting)
 				})
+				ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+					ui.Text(c, s.Title).SingleLine().FontSize(12).LineHeight(17.0 / 12).FontWeight(500)
+					ui.Row(c).MinWidth(0).Children(func() {
+						ui.Text(c, s.ProjectName).SingleLine().Shrink(0).Font(monoFont).FontSize(10.5).TextColor(p.sec)
+						ui.Text(c, " · "+s.WaitReason.String()).SingleLine().MinWidth(0).FontSize(11).TextColor(p.sec)
+					})
+				})
+				trailing(c, p, hovered, relativeTime(s.ActivityAt, now))
+			})
 		}
 	})
 }
 
-// 文件夹图标和状态点共用同一个格子，保证两者中心在同一根竖线上
-func iconCell(c *ui.Context, content func()) {
-	ui.Row(c).Width(iconColumnWidth).Padding(0, 0, 0, 8).Children(func() {
-		ui.Box(c).Size(iconCellSize, iconCellSize).Center().Children(content)
+func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, now time.Time) {
+	row := ui.Row(c).Height(rowHeight).Gap(8).Padding(0, 10).Radius(rowRadius).Cursor(ui.CursorPointer).
+		Label(s.Title + ", " + s.State.String())
+	hovered := row.Hovered()
+	if hovered {
+		row.Background(p.hover)
+	}
+	row.OnClick(func() { jumpToSession(c, s.ID) })
+
+	weight, color := 400, p.ink
+	switch s.State {
+	case monitor.Unread:
+		weight = 500
+	case monitor.Completed:
+		color = p.sec
+	}
+	when := relativeTime(s.ActivityAt, now)
+	if s.State == monitor.Running {
+		when = "now"
+	}
+	row.Children(func() {
+		ui.Row(c).Width(dotColumnWidth).Center().Children(func() { statusDot(c, p, s.State) })
+		ui.Text(c, s.Title).SingleLine().Grow(1).MinWidth(0).FontSize(12).FontWeight(weight).TextColor(color)
+		trailing(c, p, hovered, when)
 	})
 }
 
-func statusDot(c *ui.Context, state monitor.TaskState) {
-	dot := ui.Box(c).Size(6, 6).Radius(3)
+// trailing 平时显示距今多久，悬停时换成跳转箭头
+func trailing(c *ui.Context, p palette, hovered bool, when string) {
+	label := when
+	if hovered {
+		label = "→"
+	}
+	ui.Text(c, label).Shrink(0).FontSize(11).LineHeight(17.0 / 11).FontFeatures("tnum").TextColor(p.sec)
+}
+
+func relativeTime(t, now time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := now.Sub(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	}
+}
+
+func statusDot(c *ui.Context, p palette, state monitor.TaskState) {
+	dot := ui.Box(c).Size(dotSize, dotSize).Radius(dotSize / 2)
 	switch state {
 	case monitor.Running:
-		// 不用 Loop：它让整个窗口按屏幕刷新率重绘，一颗 6px 的慢速渐变不值这个开销。
+		// 不用 Loop：它让整个窗口按屏幕刷新率重绘，一颗 7px 的慢速渐变不值这个开销。
 		// 在 Draw 里按固定间隔推进，只重画、不重建视图
-		dot.Draw(func(p *ui.Painter, r ui.Rect) {
-			p.Fill(r, breathColor(ui.EaseInOut(breathPhase(p.Now()))), 3)
-			p.After(breathTick)
+		dot.Draw(func(pt *ui.Painter, r ui.Rect) {
+			pt.Fill(r, p.ink.Alpha(breathAlpha(ui.EaseInOut(breathPhase(pt.Now())))), dotSize/2)
+			pt.After(breathTick)
 		})
 	case monitor.Waiting:
-		dot.Background(colorWaiting)
+		dot.Background(p.waiting)
 	case monitor.Unread:
-		dot.Background(colorUnread)
+		dot.Background(p.unread)
 	default:
-		dot.Border(1, colorRing)
+		dot.Border(1.5, p.ring)
 	}
 }
 
@@ -260,21 +336,32 @@ func breathPhase(now time.Time) float32 {
 	return float32(now.UnixMilli()%period) / float32(period)
 }
 
-// 灰度呼吸：#D1D5DB ↔ #374151，phase 是已经缓动过的周期位置。所有点共用一个相位，一起明暗
-func breathColor(phase float32) ui.Color {
+// 不透明度在 1 和 breathLow 之间呼吸，phase 是已经缓动过的周期位置。所有点共用一个相位，一起明暗
+func breathAlpha(phase float32) float32 {
 	factor := float32(math.Cos(float64(phase)*2*math.Pi))*0.5 + 0.5
-	mix := func(light, dark float32) uint8 { return uint8(light*factor + dark*(1-factor)) }
-	return ui.RGB(mix(209, 55), mix(213, 65), mix(219, 81))
+	return breathLow + (1-breathLow)*factor
 }
 
-func emptyState(c *ui.Context, filter int) {
-	main, sub := "No active Claude sessions today", `Switch to "All" to view session history`
+func (a *app) emptyState(c *ui.Context, p palette, filter int) {
+	main := "Nothing ran today."
 	if filter == filterAll {
-		main, sub = "No Claude sessions found", "Run claude in terminal to start monitoring"
+		main = "No sessions yet."
 	}
-	ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(40, 0).Gap(6).Children(func() {
-		ui.Text(c, main).FontSize(12).TextColor(colorTextMuted)
-		ui.Text(c, sub).FontSize(10).TextColor(colorTextFaint)
+	ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(48, 24, 24, 24).Gap(6).Children(func() {
+		ui.Box(c).Size(9, 9).Radius(4.5).Border(1.5, p.ring).Margin(0, 0, 6, 0)
+		ui.Text(c, main).FontSize(13).TextAlign(ui.Center)
+		ui.Text(c, "Sessions you start in the Code tab show up here.").FontSize(11).TextAlign(ui.Center).TextColor(p.sec)
+		if filter == filterToday {
+			btn := ui.Row(c).Height(26).Padding(0, 10).Margin(8, 0, 0, 0).Radius(8).Border(1, p.buttonBorder).
+				Cursor(ui.CursorPointer).Label("Show all sessions")
+			if btn.Hovered() {
+				btn.Background(p.hover)
+			}
+			btn.OnClick(func() { a.filter = filterAll })
+			btn.Children(func() {
+				ui.Text(c, "Show all sessions →").FontSize(11)
+			})
+		}
 	})
 }
 

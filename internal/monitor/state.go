@@ -1,5 +1,7 @@
 package monitor
 
+import "time"
+
 // TaskState 和桌面端侧栏那颗点一一对应，多出来的 Waiting 是侧栏不单独标的"等授权"
 type TaskState int
 
@@ -41,12 +43,29 @@ func (s TaskState) priority() int {
 	}
 }
 
+// WaitReason 说明 Waiting 的会话在等什么，只对 Waiting 有意义
+type WaitReason int
+
+const (
+	WaitPermission WaitReason = iota
+	WaitQuestion
+)
+
+func (r WaitReason) String() string {
+	if r == WaitQuestion {
+		return "Question"
+	}
+	return "Permission prompt"
+}
+
 type SessionItem struct {
 	ID         string
 	Title      string
 	State      TaskState
+	WaitReason WaitReason
 	PID        int
 	WorkingDir string
+	ActivityAt time.Time
 	IsToday    bool
 }
 
@@ -70,6 +89,31 @@ func TodayGroups(groups []ProjectGroup) []ProjectGroup {
 		}
 	}
 	return out
+}
+
+type PendingSession struct {
+	ProjectName string
+	SessionItem
+}
+
+// SplitWaiting 把 Waiting 的会话从各自项目里拎出来，按原顺序排在一起；拎空的项目整个去掉
+func SplitWaiting(groups []ProjectGroup) ([]PendingSession, []ProjectGroup) {
+	var waiting []PendingSession
+	var rest []ProjectGroup
+	for _, g := range groups {
+		var kept []SessionItem
+		for _, s := range g.Sessions {
+			if s.State == Waiting {
+				waiting = append(waiting, PendingSession{g.ProjectName, s})
+			} else {
+				kept = append(kept, s)
+			}
+		}
+		if len(kept) > 0 {
+			rest = append(rest, ProjectGroup{ProjectName: g.ProjectName, Sessions: kept})
+		}
+	}
+	return waiting, rest
 }
 
 func CountSessions(groups []ProjectGroup) int {

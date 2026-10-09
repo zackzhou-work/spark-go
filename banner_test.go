@@ -42,31 +42,18 @@ func TestBanner(t *testing.T) {
 
 // renderDemoApp 用虚构的会话渲染界面，悬停在一行上露出跳转箭头
 func renderDemoApp() *image.RGBA {
-	a := &app{pinned: true, filter: filterAll, groups: []monitor.ProjectGroup{
-		{ProjectName: "acme-web", Sessions: []monitor.SessionItem{
-			{ID: "local_1", Title: "Add dark mode to the settings page", State: monitor.Running, IsToday: true},
-			{ID: "local_2", Title: "Fix flaky checkout integration test", State: monitor.Waiting, IsToday: true},
-			{ID: "local_3", Title: "Upgrade the router to v7", State: monitor.Unread, IsToday: true},
-		}},
-		{ProjectName: "data-pipeline", Sessions: []monitor.SessionItem{
-			{ID: "local_4", Title: "Backfill events for September", State: monitor.Running, IsToday: true},
-			{ID: "local_5", Title: "Profile the nightly aggregation job", State: monitor.Completed},
-		}},
-		{ProjectName: "docs-site", Sessions: []monitor.SessionItem{
-			{ID: "local_6", Title: "Rewrite the getting started guide", State: monitor.Unread},
-			{ID: "local_7", Title: "Add search to the API reference", State: monitor.Completed},
-		}},
-	}}
+	a := demoApp()
+	a.filter = filterAll
 	const scale = 2
-	tt := ui.NewTester(a.view, 300, 420)
+	tt := ui.NewTester(a.view, 320, 480)
 	tt.SetScale(scale)
-	r, _ := tt.Find("Fix flaky checkout integration test")
+	r, _ := tt.Find("Upgrade the router to v7")
 	tt.Move(r.X+40, r.Y+r.H/2)
 
-	// 呼吸点在周期正中最深，截在那一刻
-	now := time.Now().UnixMilli()
+	// 呼吸点在周期起点最实，截在那一刻
+	nowMs := time.Now().UnixMilli()
 	period := breathPeriod.Milliseconds()
-	time.Sleep(time.Duration((period/2-now%period+period)%period) * time.Millisecond)
+	time.Sleep(time.Duration((period-nowMs%period)%period) * time.Millisecond)
 	tt.Frame()
 
 	// 红绿灯是系统画的，无窗口渲染里没有，照原位补上
@@ -75,6 +62,28 @@ func renderDemoApp() *image.RGBA {
 		fillCircle(img, (21+float64(i)*20)*scale, 23*scale, 6*scale, c)
 	}
 	return img
+}
+
+// demoApp 是一组虚构的会话，覆盖四种状态
+func demoApp() *app {
+	now := time.Now()
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	return &app{pinned: true, groups: []monitor.ProjectGroup{
+		{ProjectName: "acme-web", Sessions: []monitor.SessionItem{
+			{ID: "local_1", Title: "Add dark mode to the settings page", State: monitor.Running, ActivityAt: now, IsToday: true},
+			{ID: "local_2", Title: "Fix flaky checkout integration test", State: monitor.Waiting, ActivityAt: ago(2 * time.Minute), IsToday: true},
+			{ID: "local_3", Title: "Upgrade the router to v7", State: monitor.Unread, ActivityAt: ago(14 * time.Minute), IsToday: true},
+			{ID: "local_8", Title: "Migrate to the new auth client", State: monitor.Completed, ActivityAt: ago(50 * time.Hour)},
+		}},
+		{ProjectName: "data-pipeline", Sessions: []monitor.SessionItem{
+			{ID: "local_4", Title: "Backfill events for September", State: monitor.Running, ActivityAt: now, IsToday: true},
+			{ID: "local_5", Title: "Profile the nightly aggregation job", State: monitor.Completed, ActivityAt: ago(time.Hour), IsToday: true},
+		}},
+		{ProjectName: "docs-site", Sessions: []monitor.SessionItem{
+			{ID: "local_6", Title: "Rewrite the getting started guide", State: monitor.Unread, ActivityAt: ago(38 * time.Minute), IsToday: true},
+			{ID: "local_7", Title: "Add search to the API reference", State: monitor.Completed, ActivityAt: ago(75 * time.Hour)},
+		}},
+	}}
 }
 
 // fillCircle 画一个边缘抗锯齿的实心圆
