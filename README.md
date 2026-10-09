@@ -4,6 +4,16 @@ A small macOS window that shows the live status of every session in the Code tab
 
 ![spark: every Claude Desktop session, at a glance](docs/banner.png)
 
+## Install
+
+Download the DMG for your Mac from [Releases](https://github.com/zackzhou-work/spark-go/releases): `apple-silicon` for M-series Macs, `intel` for Intel Macs. Open it and drag Spark into Applications.
+
+The app is not signed with a Developer ID or notarized, so the first time you open it macOS says it can't verify the developer. Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. Or clear the quarantine flag once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Spark.app
+```
+
 ## Where the status comes from
 
 - **Processes**: each core `claude` process carries the desktop session ID in its `CLAUDE_CODE_HOST_SESSION_ID` environment variable. No process means the turn is over.
