@@ -2,7 +2,7 @@
 
 A small macOS window that shows the live status of every session in the Code tab of Claude Desktop. Built with Go and the native UI of [mygo](https://github.com/egoist/mygo).
 
-<img src="docs/screenshot.png" alt="spark showing sessions grouped by project, each with a status dot" width="300">
+![spark: every Claude Desktop session, at a glance](docs/banner.png)
 
 ## Where the status comes from
 
@@ -83,6 +83,12 @@ SPARK_REAL=1 go test ./internal/monitor -run TestScanRealSessions -v
 ```
 
 The last one prints the sessions and states spark finds on this machine.
+
+The banner at the top of this README is rendered from the app's own view with made-up sessions, then laid out by `docs/banner/index.html` in headless Google Chrome:
+
+```bash
+SPARK_BANNER=1 go test -run TestBanner .
+```
 
 ## Building the app
 
