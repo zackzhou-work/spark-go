@@ -33,16 +33,17 @@ type palette struct {
 	border, warm     ui.Color
 	ring             ui.Color
 	hover, pinHover  ui.Color
+	needsHover       ui.Color
 	waiting, unread  ui.Color
 	buttonBorder     ui.Color
 }
 
-func newPalette(bg, track, thumb, ink, sec, warm, waiting, unread string, hover, pinHover float32) palette {
+func newPalette(bg, track, thumb, ink, sec, warm, needsHover, waiting, unread string, hover, pinHover float32) palette {
 	inkColor := ui.Hex(ink)
 	return palette{
 		bg: ui.Hex(bg), track: ui.Hex(track), thumb: ui.Hex(thumb),
 		ink: inkColor, sec: ui.Hex(sec),
-		border: inkColor.Alpha(0.1), warm: ui.Hex(warm),
+		border: inkColor.Alpha(0.1), warm: ui.Hex(warm), needsHover: ui.Hex(needsHover),
 		ring:  inkColor.Alpha(0.45),
 		hover: inkColor.Alpha(hover), pinHover: inkColor.Alpha(pinHover),
 		waiting: ui.Hex(waiting), unread: ui.Hex(unread),
@@ -51,8 +52,8 @@ func newPalette(bg, track, thumb, ink, sec, warm, waiting, unread string, hover,
 }
 
 var (
-	lightPalette = newPalette("#FAF9F6", "#EBEAE5", "#FFFFFF", "#26251E", "#68675F", "#F3EDE6", "#CF2D56", "#E2A110", 0.05, 0.06)
-	darkPalette  = newPalette("#14120B", "#24221B", "#35332B", "#EDECEC", "#A3A19B", "#221C15", "#E0446A", "#F0B429", 0.07, 0.08)
+	lightPalette = newPalette("#FAF9F6", "#EBEAE5", "#FFFFFF", "#26251E", "#68675F", "#F3EDE6", "#EBE2D6", "#CF2D56", "#E2A110", 0.05, 0.06)
+	darkPalette  = newPalette("#14120B", "#24221B", "#35332B", "#EDECEC", "#A3A19B", "#221C15", "#2C241B", "#E0446A", "#F0B429", 0.07, 0.08)
 )
 
 const (
@@ -79,6 +80,8 @@ const (
 	breathPeriod = 2 * time.Second
 	breathTick   = 80 * time.Millisecond
 	breathLow    = 0.22
+
+	rowHoverFade = 140 * time.Millisecond
 )
 
 type app struct {
@@ -229,18 +232,16 @@ func (a *app) page(c *ui.Context, p palette, groups []monitor.ProjectGroup, filt
 
 // needsYou 把卡在授权或提问上的会话单独放在顶上，带上项目和原因
 func needsYou(c *ui.Context, p palette, sessions []monitor.PendingSession, now time.Time) {
-	ui.Column(c).Background(p.warm).Radius(6).Padding(6, 0, 4, 0).Label("Needs you").Children(func() {
-		ui.Row(c).Height(20).Padding(0, 10).Justify(ui.SpaceBetween).Children(func() {
+	ui.Column(c).Background(p.warm).Radius(6).Padding(6, 4, 4, 4).Label("Needs you").Children(func() {
+		ui.Row(c).Height(20).Padding(0, 6).Justify(ui.SpaceBetween).Children(func() {
 			ui.Text(c, "Needs you").FontSize(11).FontWeight(500)
 			ui.Textf(c, "%d", len(sessions)).FontSize(11).FontFeatures("tnum").TextColor(p.sec)
 		})
 		for _, s := range sessions {
-			row := ui.Row(c.Key(s.ID)).AlignItems(ui.Start).Gap(8).Padding(5, 10, 6, 10).Radius(rowRadius).
+			row := ui.Row(c.Key(s.ID)).AlignItems(ui.Start).Gap(8).Padding(5, 6, 6, 6).Radius(rowRadius).
 				Cursor(ui.CursorPointer).Label(s.Title + ", needs you: " + s.WaitReason.String())
 			hovered := row.Hovered()
-			if hovered {
-				row.Background(p.hover)
-			}
+			hoverFill(row, hovered, p.needsHover)
 			row.OnClick(func() { jumpToSession(c, s.ID) })
 			row.Children(func() {
 				ui.Row(c).Size(dotColumnWidth, 17).Center().Children(func() {
@@ -263,16 +264,11 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, now time.Time) 
 	row := ui.Row(c).Height(rowHeight).Gap(8).Padding(0, 10).Radius(rowRadius).Cursor(ui.CursorPointer).
 		Label(s.Title + ", " + s.State.String())
 	hovered := row.Hovered()
-	if hovered {
-		row.Background(p.hover)
-	}
+	hoverFill(row, hovered, p.hover)
 	row.OnClick(func() { jumpToSession(c, s.ID) })
 
-	weight, color := 400, p.ink
-	switch s.State {
-	case monitor.Unread:
-		weight = 500
-	case monitor.Completed:
+	color := p.ink
+	if s.State == monitor.Completed {
 		color = p.sec
 	}
 	when := relativeTime(s.ActivityAt, now)
@@ -281,9 +277,20 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, now time.Time) 
 	}
 	row.Children(func() {
 		ui.Row(c).Width(dotColumnWidth).Center().Children(func() { statusDot(c, p, s.State) })
-		ui.Text(c, s.Title).SingleLine().Grow(1).MinWidth(0).FontSize(12).FontWeight(weight).TextColor(color)
+		ui.Text(c, s.Title).SingleLine().Grow(1).MinWidth(0).FontSize(12).TextColor(color)
 		trailing(c, p, hovered, when)
 	})
+}
+
+// hoverFill 让行的悬停底色淡入淡出，而不是一下子跳出来
+func hoverFill(row ui.Element, hovered bool, color ui.Color) {
+	target := float32(0)
+	if hovered {
+		target = 1
+	}
+	if t := row.Animate("hover", target, rowHoverFade); t > 0 {
+		row.Background(color.Alpha(t))
+	}
 }
 
 // trailing 平时显示距今多久，悬停时换成跳转箭头
