@@ -25,10 +25,10 @@ The four states match the dot in the desktop app's sidebar:
 
 | spark | Desktop sidebar | Meaning |
 | --- | --- | --- |
-| Breathing gray | Solid dark dot | The turn is in progress |
-| Red | (still a solid dark dot) | Stuck on a permission prompt or a question from the model |
+| Breathing dark dot | Solid dark dot | The turn is in progress |
+| Red, pinned under "Needs you" | (still a solid dark dot) | Stuck on a permission prompt or a question from the model |
 | Yellow | Yellow | The turn is over and you haven't seen the result |
-| Hollow gray ring | Hollow ring | The turn is over and you've seen it |
+| Hollow ring | Hollow ring | The turn is over and you've seen it |
 
 The sidebar doesn't mark "waiting for permission" separately. spark adds it, in red rather than yellow, because it needs you to act.
 

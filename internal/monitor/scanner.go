@@ -213,12 +213,17 @@ func (s *Scanner) Scan() []ProjectGroup {
 
 		state := DetermineSessionState(proc, activity, hook, data.LastActivityAt, data.LastFocusedAt, nowMs)
 		activityTs := max(data.LastActivityAt, data.CreatedAt)
+		activityAt := timestampTime(activityTs)
 		item := SessionItem{
 			ID:         sessionID,
 			Title:      title,
 			State:      state,
 			WorkingDir: originCwd,
-			IsToday:    state == Running || state == Waiting || isSameLocalDay(activityTs, now),
+			ActivityAt: activityAt,
+			IsToday:    state == Running || state == Waiting || isSameLocalDay(activityAt, now),
+		}
+		if state == Waiting && activity != nil && activity.LastEvent == AwaitingUser {
+			item.WaitReason = WaitQuestion
 		}
 		if proc != nil {
 			item.PID = proc.PID
@@ -231,15 +236,20 @@ func (s *Scanner) Scan() []ProjectGroup {
 }
 
 // 时间戳可能是毫秒也可能是秒，按量级区分
-func isSameLocalDay(ts int64, now time.Time) bool {
-	if ts <= 0 {
-		return false
+func timestampTime(ts int64) time.Time {
+	switch {
+	case ts <= 0:
+		return time.Time{}
+	case ts > 100_000_000_000:
+		return time.UnixMilli(ts)
+	default:
+		return time.Unix(ts, 0)
 	}
-	var t time.Time
-	if ts > 100_000_000_000 {
-		t = time.UnixMilli(ts)
-	} else {
-		t = time.Unix(ts, 0)
+}
+
+func isSameLocalDay(t, now time.Time) bool {
+	if t.IsZero() {
+		return false
 	}
 	y1, m1, d1 := t.Local().Date()
 	y2, m2, d2 := now.Local().Date()
