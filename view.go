@@ -263,7 +263,7 @@ func (a *app) todayPage(c *ui.Context, p palette, l layout, width float32) {
 	recent := ordered(unwaited(today))
 	now := time.Now()
 
-	ui.Scroll(c).Width(width).Children(func() {
+	scroller(c).Width(width).Children(func() {
 		if l == layoutNarrow {
 			ui.Column(c).Padding(0, 10).Gap(8).Children(func() {
 				pageHeading(c, p, l, "Your agents, today.")
@@ -330,7 +330,7 @@ func (a *app) allPage(c *ui.Context, p palette, l layout, width float32) {
 		return
 	}
 	now := time.Now()
-	ui.Scroll(c).Width(width).Children(func() {
+	scroller(c).Width(width).Children(func() {
 		ui.Column(c).Padding(4, 12, 16, 12).Children(func() {
 			header := ui.Row(c).Padding(0, 4, 14, 4).Justify(ui.SpaceBetween).AlignItems(ui.End).Gap(8)
 			if l == layoutNarrow {
@@ -355,6 +355,11 @@ func (a *app) allPage(c *ui.Context, p palette, l layout, width float32) {
 
 func heading(c *ui.Context, p palette, s string) ui.Element {
 	return ui.Text(c, s).FontSize(24).LineHeight(30.0 / 24).FontWeight(590).LetterSpacing(-0.5).TextColor(p.strong)
+}
+
+// scroller 照常滚动，但把滚动条挪到窗口外面：不画出来，也不占右边那一条的点击
+func scroller(c *ui.Context) ui.Element {
+	return ui.Scroll(c).ScrollbarInsets(0, -40, 0, 0)
 }
 
 // pageHeading 是 Today、All 页顶上那句话；窄窗口里小一号，少占点高度
@@ -493,7 +498,7 @@ func (a *app) projectPage(c *ui.Context, p palette, g monitor.ProjectGroup) {
 	if a.filter == filterAll {
 		back = "All projects"
 	}
-	ui.Scroll(c).Grow(1).Children(func() {
+	scroller(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(0, 12, 16, 12).Gap(12).Children(func() {
 			btn := ui.Row(c).AlignSelf(ui.Start).Height(32).Padding(0, 12, 0, 8).Gap(4).Radius(16).
 				Background(p.fill).Cursor(ui.CursorPointer).Label("Back to " + back)

@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { width: 1024px; height: 1024px; overflow: hidden; background: transparent; }
+  /* 按 160 的设计稿坐标画，整体放大到 1024 */
+  .tile {
+    position: absolute; left: 0; top: 0; width: 160px; height: 160px;
+    transform: scale(6.4); transform-origin: 0 0;
+    border-radius: 36px; background: #f4f4f4; box-shadow: inset 0 0 0 1px #0000000f;
+  }
+  .character { position: absolute; left: 34px; top: 40px; width: 92px; height: 92px; }
+  .character > div { position: absolute; left: 0; top: 0; width: 64px; height: 64px; transform: scale(1.4375); transform-origin: 0 0; }
+  .body { position: absolute; left: 0; top: 5px; width: 64px; height: 54px; border-radius: 16px; background: #ffbf01; }
+  .brow { position: absolute; top: 13px; width: 13px; height: 3px; border-radius: 2px; background: #0d0d0d; }
+  .eye { position: absolute; top: 20px; width: 16px; height: 20px; border-radius: 50%; background: #fff; }
+  .eye::after { content: ""; position: absolute; left: 4px; top: 2px; width: 8px; height: 10px; border-radius: 50%; background: #0d0d0d; }
+  .bubble {
+    position: absolute; right: -14px; top: -14px; width: 28px; height: 26px;
+    border-radius: 14px 14px 14px 4px; background: #fff;
+    box-shadow: 0 0 0 1px #00000014, 0 4px 8px #0000001a;
+    display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    font-size: 17px; line-height: 1; font-weight: 700; color: #0d0d0d;
+  }
+</style>
+</head>
+<body>
+  <div class="tile">
+    <div class="character"><div>
+      <div class="body">
+        <span class="brow" style="left: 14px; transform: rotate(-16deg)"></span>
+        <span class="brow" style="left: 36px; transform: rotate(16deg)"></span>
+        <span class="eye" style="left: 13px"></span>
+        <span class="eye" style="left: 35px"></span>
+      </div>
+      <span class="bubble">?</span>
+    </div></div>
+  </div>
+</body>
+</html>

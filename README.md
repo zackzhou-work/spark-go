@@ -118,7 +118,12 @@ SPARK_BANNER=1 go test -run TestBanner .
 go tool mygo build -skip-dmg
 ```
 
-The app lands in `build/darwin-arm64/Spark.app`, with the bundle ID `dev.spark.app` and the icon from `resources/icon.png`. The window's position and size are kept in `~/Library/Application Support/Spark/window-state.json`.
+The app lands in `build/darwin-arm64/Spark.app`, with the bundle ID `dev.spark.app` and the icon from `resources/icon.png`, which is rendered from `docs/icon/index.html`:
+
+```bash
+SPARK_ICON=1 go test -run TestIcon .
+```
+ The window's position and size are kept in `~/Library/Application Support/Spark/window-state.json`.
 
 `LSUIElement` isn't set, so spark is a normal Dock app. To keep it in the menu bar only, add `"macos": {"infoPlist": {"LSUIElement": true}}` to `mygo.json`.
 
