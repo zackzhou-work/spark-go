@@ -21,16 +21,18 @@ xattr -dr com.apple.quarantine /Applications/Spark.app
 - **Hooks (optional)**: with the hook installed, Claude Code reports permission prompts directly. Without it, spark can only guess them from a tool call that has been pending for 45 seconds with nothing happening.
 - **`lastFocusedAt` in the session JSON**: once a turn is over, a `lastActivityAt` newer than `lastFocusedAt` means you haven't looked at the result in the desktop app yet, so it shows as Unread.
 
-The four states match the dot in the desktop app's sidebar:
+Each project gets a character, picked by hashing its name, and the character's face shows the most urgent state among the project's sessions: needs you › working › to read › all caught up. Rows keep an ink-only marker that matches the dot in the desktop app's sidebar:
 
-| spark | Desktop sidebar | Meaning |
-| --- | --- | --- |
-| Breathing dark dot | Solid dark dot | The turn is in progress |
-| Red, pinned under "Needs you" | (still a solid dark dot) | Stuck on a permission prompt or a question from the model |
-| Yellow | Yellow | The turn is over and you haven't seen the result |
-| Hollow ring | Hollow ring | The turn is over and you've seen it |
+| spark character | spark row | Desktop sidebar | Meaning |
+| --- | --- | --- | --- |
+| Raised brows, a bobbing `!` or `?` bubble | Solid dot, on the project's tile | (still a solid dark dot) | Stuck on a permission prompt (`!`) or a question from the model (`?`) |
+| Eyes glancing sideways | Spinner | Solid dark dot | The turn is in progress |
+| Smiling, with a count badge | Solid dot and a **New** pill | Yellow | The turn is over and you haven't seen the result |
+| Eyes closed | Hollow ring | Hollow ring | The turn is over and you've seen it |
 
-The sidebar doesn't mark "waiting for permission" separately. spark adds it, in red rather than yellow, because it needs you to act.
+The sidebar doesn't mark "waiting for permission" separately. spark adds it because it needs you to act.
+
+Click a project to see all its sessions. A session waiting on you gets a card there: **Respond/Answer in Claude** jumps to it, **Later** puts the card away until the session moves again. Narrower than 340 points, the cards stack into a single column. The window doesn't shrink below 260 points wide.
 
 File watching on the session, transcript and hooks directories drives the scans, and a 5-second timer catches changes that touch no file, such as a process exiting.
 
@@ -93,6 +95,16 @@ SPARK_REAL=1 go test ./internal/monitor -run TestScanRealSessions -v
 ```
 
 The last one prints the sessions and states spark finds on this machine.
+
+To look at the characters, or render every screen with made-up sessions for comparing against the design:
+
+```bash
+go run . -avatars
+```
+
+```bash
+SPARK_SCREENS=/tmp/spark-screens go test -run TestScreens .
+```
 
 The banner at the top of this README is rendered from the app's own view with made-up sessions, then laid out by `docs/banner/index.html` in headless Google Chrome:
 

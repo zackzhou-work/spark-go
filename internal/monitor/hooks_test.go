@@ -47,3 +47,28 @@ func TestReadsSignalFromSessionFile(t *testing.T) {
 		t.Error("missing file should give no signal")
 	}
 }
+
+func TestHookInstalledReadsClaudeSettings(t *testing.T) {
+	home := t.TempDir()
+	if HookInstalled(home) {
+		t.Fatal("no settings file should mean no hook")
+	}
+	dir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(settings, []byte(`{"hooks":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if HookInstalled(home) {
+		t.Fatal("settings without the script should mean no hook")
+	}
+	hooked := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/Users/me/.config/spark/spark-hook.sh"}]}]}}`
+	if err := os.WriteFile(settings, []byte(hooked), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !HookInstalled(home) {
+		t.Fatal("settings naming the script should mean the hook is installed")
+	}
+}

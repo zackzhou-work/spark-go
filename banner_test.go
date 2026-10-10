@@ -40,26 +40,23 @@ func TestBanner(t *testing.T) {
 	}
 }
 
-// renderDemoApp 用虚构的会话渲染界面，悬停在一行上露出跳转箭头
+// renderDemoApp 用虚构的会话渲染 Today 页，悬停在一行上露出跳转箭头
 func renderDemoApp() *image.RGBA {
 	a := demoApp()
-	a.filter = filterAll
 	const scale = 2
-	tt := ui.NewTester(a.view, 320, 480)
+	tt := ui.NewTester(a.view, 360, 640)
 	tt.SetScale(scale)
+	// 角色不眨眼、气泡不浮动，截到的是每种表情的静止姿态
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	tt.Frame()
 	r, _ := tt.Find("Upgrade the router to v7")
 	tt.Move(r.X+40, r.Y+r.H/2)
-
-	// 呼吸点在周期起点最实，截在那一刻
-	nowMs := time.Now().UnixMilli()
-	period := breathPeriod.Milliseconds()
-	time.Sleep(time.Duration((period-nowMs%period)%period) * time.Millisecond)
 	tt.Frame()
 
 	// 红绿灯是系统画的，无窗口渲染里没有，照原位补上
 	img := tt.Image()
 	for i, c := range []color.RGBA{{0xFF, 0x5F, 0x57, 0xFF}, {0xFE, 0xBC, 0x2E, 0xFF}, {0x28, 0xC8, 0x40, 0xFF}} {
-		fillCircle(img, (21+float64(i)*20)*scale, 23*scale, 6*scale, c)
+		fillCircle(img, (20+float64(i)*20)*scale, 24*scale, 6*scale, c)
 	}
 	return img
 }
@@ -82,6 +79,13 @@ func demoApp() *app {
 		{ProjectName: "docs-site", Sessions: []monitor.SessionItem{
 			{ID: "local_6", Title: "Rewrite the getting started guide", State: monitor.Unread, ActivityAt: ago(38 * time.Minute), IsToday: true},
 			{ID: "local_7", Title: "Add search to the API reference", State: monitor.Completed, ActivityAt: ago(75 * time.Hour)},
+		}},
+		{ProjectName: "search-api", Sessions: []monitor.SessionItem{
+			{ID: "local_9", Title: "Pick an embedding model", State: monitor.Waiting, WaitReason: monitor.WaitQuestion, ActivityAt: ago(8 * time.Minute), IsToday: true},
+			{ID: "local_10", Title: "Trace the slow ranking query", State: monitor.Completed, ActivityAt: ago(26 * time.Hour)},
+		}},
+		{ProjectName: "infra", Sessions: []monitor.SessionItem{
+			{ID: "local_11", Title: "Rotate the staging certificates", State: monitor.Completed, ActivityAt: ago(3 * time.Hour), IsToday: true},
 		}},
 	}}
 }
