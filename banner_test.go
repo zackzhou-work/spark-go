@@ -40,6 +40,26 @@ func TestBanner(t *testing.T) {
 	}
 }
 
+// SPARK_ICON=1 go test -run TestIcon . 用无头 Chrome 把 docs/icon/index.html 渲染成 resources/icon.png
+func TestIcon(t *testing.T) {
+	if os.Getenv("SPARK_ICON") == "" {
+		t.Skip("set SPARK_ICON=1 to regenerate resources/icon.png")
+	}
+	src, err := filepath.Abs("docs/icon/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := filepath.Abs("resources/icon.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(chrome, "--headless", "--hide-scrollbars", "--default-background-color=00000000",
+		"--window-size=1024,1024", "--screenshot="+out, "file://"+src)
+	if msg, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("chrome: %v\n%s", err, msg)
+	}
+}
+
 // renderDemoApp 用虚构的会话渲染 Today 页，悬停在一行上露出跳转箭头
 func renderDemoApp() *image.RGBA {
 	a := demoApp()
