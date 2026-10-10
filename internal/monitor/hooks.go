@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -68,4 +69,10 @@ func classifyHook(payload []byte) (HookKind, bool) {
 		return HookStopped, true
 	}
 	return HookOther, true
+}
+
+// HookInstalled 看 ~/.claude/settings.json 里有没有挂上 spark-hook.sh。只认脚本名，不校验每个事件都配齐了
+func HookInstalled(home string) bool {
+	content, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	return err == nil && bytes.Contains(content, []byte("spark-hook.sh"))
 }
