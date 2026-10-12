@@ -58,8 +58,26 @@ func (r WaitReason) String() string {
 	return "Permission prompt"
 }
 
+// SessionSource says which agent a session came from, which picks the deep link on click
+type SessionSource int
+
+const (
+	// SourceClaude is Claude Desktop's Code tab
+	SourceClaude SessionSource = iota
+	// SourceCodex is a Codex thread, whether from the desktop app, a CLI, or an IDE
+	SourceCodex
+)
+
+func (s SessionSource) String() string {
+	if s == SourceCodex {
+		return "Codex"
+	}
+	return "Claude"
+}
+
 type SessionItem struct {
 	ID         string
+	Source     SessionSource
 	Title      string
 	State      TaskState
 	WaitReason WaitReason

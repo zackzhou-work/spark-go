@@ -32,3 +32,23 @@ func TestRejectsIDsTheDesktopAppWouldNotMatch(t *testing.T) {
 		t.Error("64 chars should be accepted")
 	}
 }
+
+func TestCodexDeeplinkValidatesThreadID(t *testing.T) {
+	got, ok := CodexDeeplink("01a12f69-fdb1-7173-b784-47189d9442d7")
+	if !ok || got != "codex://threads/01a12f69-fdb1-7173-b784-47189d9442d7" {
+		t.Errorf("got %q ok=%v", got, ok)
+	}
+	for _, id := range []string{
+		"",
+		// Not UUID shaped
+		"not-a-uuid",
+		"01a12f69-fdb1-7173-b784",
+		"01a12f69-fdb1-7173-b784-47189d9442d7-extra",
+		// Right segment lengths, but not hexadecimal
+		"zzzzzzzz-fdb1-7173-b784-47189d9442d7",
+	} {
+		if _, ok := CodexDeeplink(id); ok {
+			t.Errorf("%q should be rejected", id)
+		}
+	}
+}

@@ -51,6 +51,9 @@ type Scanner struct {
 	SessionsDir  string
 	ProjectsRoot string
 	HooksDir     string
+	CodexRoot    string
+	CodexHome    string
+	CodexHookDir string
 	cpu          *cpuSampler
 }
 
@@ -63,6 +66,9 @@ func NewScanner() *Scanner {
 		SessionsDir:  filepath.Join(home, "Library", "Application Support", "Claude", "claude-code-sessions"),
 		ProjectsRoot: filepath.Join(home, ".claude", "projects"),
 		HooksDir:     HooksDir(home),
+		CodexRoot:    CodexSessionsRoot(home),
+		CodexHome:    CodexHome(home),
+		CodexHookDir: CodexHookDir(home),
 		cpu:          newCPUSampler(),
 	}
 }
@@ -70,7 +76,8 @@ func NewScanner() *Scanner {
 // WatchDirs 是需要监听变化的目录；hooks 目录先建好，否则无法被监听
 func (s *Scanner) WatchDirs() []string {
 	_ = os.MkdirAll(s.HooksDir, 0o755)
-	return []string{s.SessionsDir, s.ProjectsRoot, s.HooksDir}
+	dirs := []string{s.SessionsDir, s.ProjectsRoot, s.HooksDir}
+	return append(dirs, s.codexWatchDirs()...)
 }
 
 // liveProcesses 通过进程环境变量把每个存活的 Claude 核心进程精确归到宿主会话 ID
@@ -155,8 +162,8 @@ type discovered struct {
 	activityTs int64
 }
 
-// Scan 扫描 Claude Desktop 的所有未归档会话
-func (s *Scanner) Scan() []ProjectGroup {
+// scanClaude scans every unarchived Claude Desktop session
+func (s *Scanner) scanClaude() []discovered {
 	live := s.liveProcesses()
 	if _, err := os.Stat(s.SessionsDir); err != nil {
 		return nil
@@ -216,6 +223,7 @@ func (s *Scanner) Scan() []ProjectGroup {
 		activityAt := timestampTime(activityTs)
 		item := SessionItem{
 			ID:         sessionID,
+			Source:     SourceClaude,
 			Title:      title,
 			State:      state,
 			WorkingDir: originCwd,
@@ -232,6 +240,13 @@ func (s *Scanner) Scan() []ProjectGroup {
 		return nil
 	})
 
+	return found
+}
+
+// ScanAll merges the Claude and Codex sides into one list
+func (s *Scanner) ScanAll() []ProjectGroup {
+	found := s.scanClaude()
+	found = append(found, s.scanCodex(time.Now())...)
 	return groupByProject(found)
 }
 

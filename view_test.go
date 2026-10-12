@@ -126,10 +126,30 @@ func TestEmptyTodayOffersAllSessionsAndTheHook(t *testing.T) {
 	}
 
 	a.hookInstalled = true
+	a.codexHookInstalled = true
 	a.filter = filterToday
 	tt.Frame()
 	if tt.HasText("Hear about prompts right away") {
 		t.Fatal("no need to offer a hook that is installed")
+	}
+}
+
+// Each hook installs separately: with Claude's installed and Codex's missing, Codex's is
+// still offered
+func TestHookBannerCoversCodexSeparately(t *testing.T) {
+	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "old", Sessions: []monitor.SessionItem{
+		{ID: "local_1", Title: "Last week's work", State: monitor.Completed, ActivityAt: time.Now().Add(-72 * time.Hour)},
+	}}}, hookInstalled: true}
+	tt := newViewTester(a, 360, 640)
+	if !tt.HasText("Install for Codex") {
+		t.Fatalf("Codex hook should be offered on its own; it shows %q", tt.Texts())
+	}
+	// HasText matches substrings and "Install" would hit "Install for Codex", so compare
+	// labels exactly
+	for _, text := range tt.Texts() {
+		if text == "Install" {
+			t.Fatal("the Claude hook is already installed, it should not be offered again")
+		}
 	}
 }
 

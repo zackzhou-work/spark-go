@@ -24,7 +24,12 @@ func main() {
 
 	scanner := monitor.NewScanner()
 	home, _ := os.UserHomeDir()
-	a := &app{pinned: true, groups: scanner.Scan(), hookInstalled: monitor.HookInstalled(home)}
+	a := &app{
+		pinned:             true,
+		groups:             scanner.ScanAll(),
+		hookInstalled:      monitor.HookInstalled(home),
+		codexHookInstalled: monitor.CodexHooksInstalled(home),
+	}
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -67,7 +72,8 @@ func main() {
 			}
 			last = groups
 			hooked := monitor.HookInstalled(home)
-			win.Update(func() { a.groups, a.hookInstalled = groups, hooked })
+			codexHooked := monitor.CodexHooksInstalled(home)
+			win.Update(func() { a.groups, a.hookInstalled, a.codexHookInstalled = groups, hooked, codexHooked })
 			return true
 		})
 	})

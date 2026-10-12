@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -117,9 +118,13 @@ type app struct {
 	// project 不为空时显示这个项目的详情页
 	project string
 	pinned  bool
-	// snoozed 记下点了 Later 的等待会话，值是当时的 ActivityAt；会话再有动静就重新出现
-	snoozed       map[string]time.Time
-	hookInstalled bool
+	// snoozed records waiting sessions dismissed with Later, keyed by the ActivityAt at the
+	// time; any new activity brings them back
+	snoozed map[string]time.Time
+	// hookInstalled covers Claude only; each side's hook installs separately and the banner
+	// prompts for them individually
+	hookInstalled      bool
+	codexHookInstalled bool
 }
 
 func (a *app) view(c *ui.Context) {
@@ -409,7 +414,7 @@ func (a *app) respondButton(c *ui.Context, p palette, s monitor.SessionItem, hei
 	if s.WaitReason == monitor.WaitQuestion {
 		label, primary = "Answer", false
 	}
-	return pillButton(c, p, label, primary, height, size).OnClick(func() { jumpToSession(c, s.ID) })
+	return pillButton(c, p, label, primary, height, size).OnClick(func() { jumpToSession(c, s) })
 }
 
 func waitLine(r monitor.WaitReason) string {
@@ -567,7 +572,7 @@ func (a *app) waitingCard(c *ui.Context, p palette, s monitor.SessionItem, now t
 			if s.WaitReason == monitor.WaitQuestion {
 				label = "Answer in Claude"
 			}
-			pillButton(c, p, label, true, 36, 14).OnClick(func() { jumpToSession(c, s.ID) })
+			pillButton(c, p, label, true, 36, 14).OnClick(func() { jumpToSession(c, s) })
 			pillButton(c, p, "Later", false, 36, 14).OnClick(func() {
 				if a.snoozed == nil {
 					a.snoozed = map[string]time.Time{}
@@ -670,7 +675,7 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, st rowStyle, no
 		Label(s.Title + ", " + s.State.String())
 	hovered := row.Hovered()
 	hoverFill(row, hovered, p.rowHover)
-	row.OnClick(func() { jumpToSession(c, s.ID) })
+	row.OnClick(func() { jumpToSession(c, s) })
 
 	when := relativeTime(s.ActivityAt, now)
 	switch {
@@ -825,22 +830,39 @@ func (a *app) emptyState(c *ui.Context, p palette, filter int, width float32) {
 				pillButton(c, p, "Show all sessions", true, 40, 14).OnClick(func() { a.filter = filterAll })
 			}
 		})
-		if !a.hookInstalled {
-			hookBanner(c, p)
+		if !a.hookInstalled || !a.codexHookInstalled {
+			a.hookBanner(c, p)
 		} else {
 			ui.Box(c).Height(12)
 		}
 	})
 }
 
-// hookBanner 提示装上 hook：没有它，授权框只能靠猜
-func hookBanner(c *ui.Context, p palette) {
+// hookBanner prompts for the hook: without it an approval prompt can only be guessed at.
+// Claude and Codex hooks install separately, so whichever is missing gets offered
+func (a *app) hookBanner(c *ui.Context, p palette) {
 	ui.Row(c).Margin(12).Radius(16).Border(1, p.line).Padding(12, 12, 12, 16).Gap(12).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Text(c, "Hear about prompts right away").FontSize(14).LineHeight(20.0 / 14).FontWeight(510)
 			ui.Text(c, "Install the hook so spark doesn’t have to guess.").FontSize(12).LineHeight(1.5).TextColor(p.sec)
 		})
-		pillButton(c, p, "Install", false, 32, 14).OnClick(func() { openURL(c, hookGuideURL) })
+		if !a.hookInstalled {
+			pillButton(c, p, "Install", false, 32, 14).OnClick(func() { openURL(c, hookGuideURL) })
+		}
+		if !a.codexHookInstalled {
+			pillButton(c, p, "Install for Codex", false, 32, 14).OnClick(func() {
+				home, _ := os.UserHomeDir()
+				if err := monitor.InstallCodexHookScript(home); err != nil {
+					log.Printf("[Hooks] writing the Codex hook script failed: %v", err)
+					return
+				}
+				if err := monitor.InstallCodexHooks(home, monitor.CodexHookScriptPath(home)); err != nil {
+					log.Printf("[Hooks] installing the Codex hook failed: %v", err)
+					return
+				}
+				a.codexHookInstalled = true
+			})
+		}
 	})
 }
 
@@ -955,11 +977,19 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// jumpToSession 唤起 Claude Desktop 并切到指定会话；窗口的置前由应用自己处理
-func jumpToSession(c *ui.Context, sessionID string) {
-	url, ok := monitor.SessionDeeplink(sessionID)
+// jumpToSession jumps to a session: each side uses its own desktop deep link
+func jumpToSession(c *ui.Context, s monitor.SessionItem) {
+	var (
+		url string
+		ok  bool
+	)
+	if s.Source == monitor.SourceCodex {
+		url, ok = monitor.CodexDeeplink(s.ID)
+	} else {
+		url, ok = monitor.SessionDeeplink(s.ID)
+	}
 	if !ok {
-		log.Printf("[Jump] 不是桌面端会话 ID，跳过：%s", sessionID)
+		log.Printf("[Jump] session ID doesn't match the deep link format, skipping: %s", s.ID)
 		return
 	}
 	openURL(c, url)

@@ -28,7 +28,7 @@ func Watch(s *Scanner, publish func([]ProjectGroup) bool) {
 		}
 
 		for {
-			if !publish(s.Scan()) {
+			if !publish(s.ScanAll()) {
 				return
 			}
 			select {

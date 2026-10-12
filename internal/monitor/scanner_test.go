@@ -187,7 +187,7 @@ func TestScanRealSessions(t *testing.T) {
 	if os.Getenv("SPARK_REAL") == "" {
 		t.Skip("set SPARK_REAL=1 to scan this machine")
 	}
-	groups := NewScanner().Scan()
+	groups := NewScanner().ScanAll()
 	for _, g := range groups {
 		t.Logf("Project: %s (%d sessions)", g.ProjectName, len(g.Sessions))
 		for _, s := range g.Sessions {
