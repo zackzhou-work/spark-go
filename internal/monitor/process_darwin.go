@@ -41,8 +41,9 @@ func listProcesses() []procInfo {
 
 var hostSessionKey = []byte("CLAUDE_CODE_HOST_SESSION_ID=")
 
-// hostSessionID 读 Claude 核心进程环境变量里的宿主会话 ID，与桌面端会话 JSON 的 sessionId 一一对应。
-// KERN_PROCARGS2 返回 argc、可执行路径、参数与环境变量，以 NUL 分隔
+// hostSessionID reads the host session ID from a claude core process's environment, which
+// maps one-to-one onto the sessionId in the desktop session JSON. KERN_PROCARGS2 returns
+// argc, the executable path, arguments and environment, NUL separated
 func hostSessionID(pid int) (string, bool) {
 	buf, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
@@ -56,7 +57,8 @@ func hostSessionID(pid int) (string, bool) {
 	return "", false
 }
 
-// cpuSampler 按两次扫描之间的 CPU 时间增量算占用率，口径和 sysinfo 一致：单核百分比
+// cpuSampler derives usage from the CPU time delta between two scans, matching sysinfo:
+// a percentage of a single core
 type cpuSampler struct {
 	prev map[int]cpuSample
 }
@@ -70,7 +72,7 @@ func newCPUSampler() *cpuSampler {
 	return &cpuSampler{prev: map[int]cpuSample{}}
 }
 
-// sample 只采给定的这些进程，其余的旧样本顺手丢掉
+// sample only samples the given processes and drops every other previous sample
 func (s *cpuSampler) sample(pids []int, now time.Time) map[int]float32 {
 	usage := make(map[int]float32, len(pids))
 	next := make(map[int]cpuSample, len(pids))
@@ -91,7 +93,8 @@ func (s *cpuSampler) sample(pids []int, now time.Time) map[int]float32 {
 	return usage
 }
 
-// 进程累计 CPU 时间没有 sysctl 可读，只能走 libproc 的 proc_pid_rusage；用 purego 调，保持不开 cgo
+// No sysctl exposes a process's cumulative CPU time, so this goes through libproc's
+// proc_pid_rusage via purego, keeping cgo off
 var (
 	libprocOnce   sync.Once
 	procPidRusage func(pid int32, flavor int32, buf unsafe.Pointer) int32
@@ -100,7 +103,7 @@ var (
 	tickDenom     uint64 = 1
 )
 
-// rusage_info_v0 的前几个字段，后面的用不上
+// The first few fields of rusage_info_v0; the rest are unused
 type rusageInfoV0 struct {
 	uuid       [16]byte
 	userTime   uint64
@@ -115,7 +118,7 @@ func loadLibproc() {
 	}
 	purego.RegisterLibFunc(&procPidRusage, lib, "proc_pid_rusage")
 	purego.RegisterLibFunc(&machTimebase, lib, "mach_timebase_info")
-	// Apple Silicon 上 rusage 的时间单位是 mach tick，不是纳秒
+	// On Apple Silicon rusage reports time in mach ticks, not nanoseconds
 	var tb struct{ numer, denom uint32 }
 	if machTimebase(unsafe.Pointer(&tb)) == 0 && tb.denom != 0 {
 		tickNumer, tickDenom = uint64(tb.numer), uint64(tb.denom)

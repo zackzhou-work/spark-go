@@ -10,7 +10,8 @@ import (
 
 var moodNames = [...]string{"Needs you", "Working", "To read", "All caught up"}
 
-// avatarGallery 是角色的预览窗口：上面切换表情看过渡，下面是五个角色乘四种表情
+// avatarGallery is the character preview window: expressions to switch between and watch
+// transition up top, five characters by four expressions below
 type avatarGallery struct {
 	mood mood
 }
@@ -59,7 +60,8 @@ func (g *avatarGallery) view(c *ui.Context) {
 	})
 }
 
-// demoProp 让预览里 ! 和 ? 两种气泡、一位和多位数的角标都出现
+// demoProp makes the preview show both ! and ? bubbles along with single- and multi-digit
+// badges
 func demoProp(i int) prop {
 	glyph := "!"
 	if i%2 == 1 {

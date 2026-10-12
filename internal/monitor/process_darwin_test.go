@@ -20,7 +20,8 @@ func TestListsOwnProcess(t *testing.T) {
 }
 
 func TestReadsEnvironmentOfOwnProcess(t *testing.T) {
-	// 环境变量是进程启动时的快照，只能在子进程里验证；这里只验证读得到且不误报
+	// The environment is a snapshot from process start, so it can only be checked in a child
+	// process; this just verifies it reads and doesn't report false positives
 	if _, ok := hostSessionID(os.Getpid()); ok && os.Getenv("CLAUDE_CODE_HOST_SESSION_ID") == "" {
 		t.Error("found a session id that is not in the environment")
 	}

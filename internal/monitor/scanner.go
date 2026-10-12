@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	// 工具调用挂起且 transcript 无更新超过此时长，视为在等用户授权
+	// A tool call left pending with no transcript update for this long counts as waiting
+	// on the user
 	toolPendingIdleMs = 45_000
-	// transcript 尚未生成时，刚提交的会话仍按运行中处理
+	// Before a transcript exists, a just-submitted session still counts as running
 	freshSessionMs = 60_000
 )
 
@@ -31,14 +32,15 @@ type rawSessionJSON struct {
 	CreatedAt      int64  `json:"createdAt"`
 }
 
-// LiveProcess 是与某个桌面端会话对应的存活 Claude 进程
+// LiveProcess is a live claude process belonging to one desktop session
 type LiveProcess struct {
 	PID         int
 	HasChildren bool
 	CPUUsage    float32
 }
 
-// 携带同一个宿主会话 ID 的候选进程：核心进程派生的短命子进程会继承这个环境变量
+// Candidate processes sharing one host session ID: short-lived children of the core
+// process inherit this environment variable
 type processCandidate struct {
 	pid         int
 	parent      int
@@ -73,14 +75,16 @@ func NewScanner() *Scanner {
 	}
 }
 
-// WatchDirs 是需要监听变化的目录；hooks 目录先建好，否则无法被监听
+// WatchDirs are the directories to watch; the hooks directory is created first, since
+// it can't be watched until it exists
 func (s *Scanner) WatchDirs() []string {
 	_ = os.MkdirAll(s.HooksDir, 0o755)
 	dirs := []string{s.SessionsDir, s.ProjectsRoot, s.HooksDir}
 	return append(dirs, s.codexWatchDirs()...)
 }
 
-// liveProcesses 通过进程环境变量把每个存活的 Claude 核心进程精确归到宿主会话 ID
+// liveProcesses attributes each live claude core process to its host session ID through
+// the process environment
 func (s *Scanner) liveProcesses() map[string]LiveProcess {
 	procs := listProcesses()
 	hasChildren := make(map[int]bool, len(procs))
@@ -120,7 +124,9 @@ func (s *Scanner) liveProcesses() map[string]LiveProcess {
 	return pickCoreProcesses(candidates)
 }
 
-// pickCoreProcesses：一个会话 ID 可能对应多个进程，只保留核心那个，否则 PID 和忙碌判断会随扫描顺序抖动
+// pickCoreProcesses keeps only the core process per session ID, since one ID can map to
+// several processes and the choice would otherwise make PID and busy checks flap between
+// scans
 func pickCoreProcesses(grouped map[string][]processCandidate) map[string]LiveProcess {
 	live := make(map[string]LiveProcess, len(grouped))
 	for id, group := range grouped {
@@ -133,7 +139,8 @@ func pickCoreProcesses(grouped map[string][]processCandidate) map[string]LivePro
 	return live
 }
 
-// pickCore：父进程同在组里的都是继承来的子进程，先排掉；剩下的取启动最早的那个
+// pickCore drops candidates whose parent is in the same group, since those are inherited
+// children, then takes the earliest-started of what's left
 func pickCore(group []processCandidate) (processCandidate, bool) {
 	if len(group) == 0 {
 		return processCandidate{}, false
@@ -250,7 +257,7 @@ func (s *Scanner) ScanAll() []ProjectGroup {
 	return groupByProject(found)
 }
 
-// 时间戳可能是毫秒也可能是秒，按量级区分
+// Timestamps may be milliseconds or seconds; tell them apart by magnitude
 func timestampTime(ts int64) time.Time {
 	switch {
 	case ts <= 0:
@@ -282,7 +289,7 @@ func groupByProject(found []discovered) []ProjectGroup {
 
 	groups := make([]ProjectGroup, 0, len(byProject))
 	for project, items := range byProject {
-		// 项目内会话：Running/Waiting 优先，其余按最后活动时间倒序排列
+		// Within a project: Running/Waiting first, the rest by most recent activity
 		slices.SortStableFunc(items, func(a, b discovered) int {
 			return cmp.Or(
 				cmp.Compare(b.item.State.priority(), a.item.State.priority()),
@@ -296,7 +303,7 @@ func groupByProject(found []discovered) []ProjectGroup {
 		groups = append(groups, ProjectGroup{ProjectName: project, Sessions: sessions})
 	}
 
-	// 有进行中/待处理任务的项目置顶，其余按名字排序
+	// Projects with running or pending work go first, the rest sort by name
 	groupPriority := func(g ProjectGroup) int {
 		p := 0
 		for _, s := range g.Sessions {
@@ -314,12 +321,14 @@ func groupByProject(found []discovered) []ProjectGroup {
 	return groups
 }
 
-// DetermineSessionState 状态判决：
-//   - Waiting: hook 报告正在等授权且 transcript 之后没有新动静；工具在向用户提问；
-//     没装 hook 时，工具调用挂起且进程、transcript 都长时间无动静也视为等授权
-//   - Running: 其余存活会话；transcript 尚未生成时按提交时间兜底
-//   - Unread / Completed: 没有存活进程，或 transcript 显示回合已结束。再按桌面端有没有
-//     看过分成两档——lastActivityAt 比 lastFocusedAt 新就是还没看过，和侧栏那颗黄点同一套判断
+// DetermineSessionState decides a session's state:
+//   - Waiting: a hook reports a pending approval and the transcript hasn't moved since; a
+//     tool is asking the user something; or, with no hook installed, a tool call is pending
+//     while the process and transcript have both been quiet for a long time
+//   - Running: any other live session; before a transcript exists, fall back to submit time
+//   - Unread / Completed: no live process, or the transcript shows the turn ended. Split by
+//     whether the desktop app has shown it: lastActivityAt newer than lastFocusedAt means
+//     not yet, the same test as the sidebar's yellow dot
 func DetermineSessionState(proc *LiveProcess, activity *TranscriptActivity, hook *HookSignal, lastActivityAt, lastFocusedAt, nowMs int64) TaskState {
 	finished := Completed
 	if lastActivityAt > lastFocusedAt {
@@ -350,8 +359,9 @@ func DetermineSessionState(proc *LiveProcess, activity *TranscriptActivity, hook
 	case AwaitingUser:
 		return Waiting
 	}
-	// hook 还在报工具执行就不用超时去猜；报别的（比如等了一分钟的 idle 通知）
-	// 说明它已经盖掉了更早的授权事件，这时候仍然要靠超时兜底
+	// A hook still reporting tool activity means there's nothing to guess from a timeout. A
+	// different report (say an idle notification a minute later) has already replaced an
+	// earlier approval event, so the timeout fallback still applies
 	if hook != nil && hook.Kind == HookBusy {
 		return Running
 	}

@@ -2,17 +2,19 @@ package monitor
 
 import "time"
 
-// TaskState 和桌面端侧栏那颗点一一对应，多出来的 Waiting 是侧栏不单独标的"等授权"
+// TaskState maps onto the dot in the desktop sidebar, plus Waiting, which the sidebar
+// doesn't call out separately
 type TaskState int
 
 const (
-	// Running 回合进行中
+	// Running: a turn is in progress
 	Running TaskState = iota
-	// Waiting 卡在授权框或模型的提问上，你不动它就不会往下走
+	// Waiting: stuck on an approval prompt or a question from the model, so nothing
+	// moves until you act
 	Waiting
-	// Unread 回合已结束，但产出还没在桌面端看过
+	// Unread: the turn ended but the result hasn't been looked at in the desktop app
 	Unread
-	// Completed 回合已结束且已经看过
+	// Completed: the turn ended and the result has been seen
 	Completed
 )
 
@@ -29,7 +31,7 @@ func (s TaskState) String() string {
 	}
 }
 
-// priority 决定排序：进行中和待处理的排在前面
+// priority drives sorting: running and pending sessions come first
 func (s TaskState) priority() int {
 	switch s {
 	case Running:
@@ -43,7 +45,7 @@ func (s TaskState) priority() int {
 	}
 }
 
-// WaitReason 说明 Waiting 的会话在等什么，只对 Waiting 有意义
+// WaitReason says what a Waiting session is waiting on; only meaningful for Waiting
 type WaitReason int
 
 const (
@@ -92,7 +94,7 @@ type ProjectGroup struct {
 	Sessions    []SessionItem
 }
 
-// TodayGroups 只保留今天有活动的会话，空组整个去掉
+// TodayGroups keeps only sessions with activity today, dropping groups that end up empty
 func TodayGroups(groups []ProjectGroup) []ProjectGroup {
 	var out []ProjectGroup
 	for _, g := range groups {
@@ -114,7 +116,8 @@ type PendingSession struct {
 	SessionItem
 }
 
-// SplitWaiting 把 Waiting 的会话从各自项目里拎出来，按原顺序排在一起；拎空的项目整个去掉
+// SplitWaiting pulls Waiting sessions out of their projects in their original order,
+// dropping any project left empty
 func SplitWaiting(groups []ProjectGroup) ([]PendingSession, []ProjectGroup) {
 	var waiting []PendingSession
 	var rest []ProjectGroup

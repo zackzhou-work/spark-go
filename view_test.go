@@ -194,7 +194,7 @@ func TestLayoutFollowsWindowWidth(t *testing.T) {
 	}
 }
 
-// 宽但矮的窗口保留切换按钮和卡片，内容放不下就滚动
+// A wide but short window keeps the tab buttons and cards, scrolling when content doesn't fit
 func TestShortWindowKeepsTheTabs(t *testing.T) {
 	tt := newViewTester(demoApp(), 282, 300)
 	for _, s := range []string{"Today", "All", "Respond"} {
@@ -228,7 +228,8 @@ func TestByDaySplitsAtMidnight(t *testing.T) {
 	}
 }
 
-// SPARK_SCREENS=dir go test -run TestScreens . 把各个界面无窗口渲染成图片，方便对照设计稿
+// SPARK_SCREENS=dir go test -run TestScreens . renders each screen to an image without a
+// window, for comparing against the design
 func TestScreens(t *testing.T) {
 	dir := os.Getenv("SPARK_SCREENS")
 	if dir == "" {

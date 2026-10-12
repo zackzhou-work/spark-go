@@ -9,15 +9,16 @@ import (
 )
 
 const (
-	// 文件事件到达后再等这么久，把一串连续写入合并成一次扫描
+	// After a file event, wait this long to fold a burst of writes into one scan
 	debounce = 300 * time.Millisecond
-	// 进程退出、工具挂起超时这类变化不产生文件事件，靠定时兜底
+	// Changes like a process exiting or a pending tool timing out produce no file event,
+	// so a timer catches them
 	fallbackWatching = 5 * time.Second
 	fallbackPolling  = 2 * time.Second
 )
 
-// Watch 在后台监听会话、transcript 和 hooks 目录，有变化就重新扫描，把结果交给 publish。
-// publish 返回 false 时停止
+// Watch follows the session, transcript and hook directories in the background and rescans
+// on any change, handing results to publish. Returning false from publish stops it
 func Watch(s *Scanner, publish func([]ProjectGroup) bool) {
 	go func() {
 		events, closeWatcher := watchRecursive(s.WatchDirs())
@@ -40,7 +41,7 @@ func Watch(s *Scanner, publish func([]ProjectGroup) bool) {
 	}()
 }
 
-// 事件一停下来超过 debounce 就返回
+// Return once events have stopped for longer than debounce
 func drain(events <-chan struct{}) {
 	for {
 		select {
@@ -51,8 +52,9 @@ func drain(events <-chan struct{}) {
 	}
 }
 
-// fsnotify 在 macOS 上走 kqueue，不支持递归监听，只能把每层子目录都加进去，新建的目录也得补上。
-// 一个目录都没监听上时返回 nil channel，调用方退回轮询
+// fsnotify uses kqueue on macOS, which can't watch recursively, so every subdirectory is
+// added individually and newly created ones are picked up too. With nothing watched it
+// returns a nil channel and the caller falls back to polling
 func watchRecursive(roots []string) (<-chan struct{}, func()) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {

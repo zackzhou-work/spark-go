@@ -9,17 +9,19 @@ import (
 	"strings"
 )
 
-// TurnEvent 是 transcript 末尾记录反映的回合进度
+// TurnEvent is the turn progress reflected by the end of a transcript
 type TurnEvent int
 
 const (
-	// Generating 模型正在生成：用户刚提交、工具结果已回填、或消息尚未收尾
+	// Generating: the model is producing output -- the user just submitted, a tool result
+	// came back, or a message hasn't wrapped up
 	Generating TurnEvent = iota
-	// ToolPending 模型发出工具调用后尚无结果：工具执行中，或在等用户授权
+	// ToolPending: a tool call has no result yet, so the tool is running or waiting on the
+	// user to approve
 	ToolPending
-	// AwaitingUser 工具本身就是在向用户提问（AskUserQuestion / ExitPlanMode）
+	// AwaitingUser: the tool itself asks the user something (AskUserQuestion / ExitPlanMode)
 	AwaitingUser
-	// Ended 回合已结束：end_turn、stop hook 已执行、或被用户打断
+	// Ended: the turn finished -- end_turn, a stop hook ran, or the user interrupted
 	Ended
 )
 
@@ -53,7 +55,8 @@ type contentBlock struct {
 	Text string `json:"text"`
 }
 
-// LocateTranscript 按候选 cwd 依次找 transcript；Claude Code 把 cwd 里所有非字母数字字符换成 '-' 作为项目目录名
+// LocateTranscript tries each candidate cwd in turn; Claude Code names the project
+// directory by replacing every non-alphanumeric character in the cwd with '-'
 func LocateTranscript(projectsRoot, cliSessionID string, cwdCandidates ...string) string {
 	for _, cwd := range cwdCandidates {
 		if cwd == "" {
@@ -110,7 +113,7 @@ func lastTurnEvent(transcript string) (TurnEvent, bool) {
 	}
 
 	lines := bytes.Split(raw, []byte("\n"))
-	// 从中间截断的第一行不完整
+	// The first line is incomplete when the tail starts mid-file
 	if start > 0 && len(lines) > 0 {
 		lines = lines[1:]
 	}
@@ -158,7 +161,8 @@ func classifyRecord(line []byte) (TurnEvent, bool) {
 	return 0, false
 }
 
-// content 可能是字符串也可能是块数组，只有数组里才有工具调用和打断标记
+// content is either a string or an array of blocks, and only the array form carries tool
+// calls and interrupt markers
 func contentBlocks(m *message) []contentBlock {
 	var blocks []contentBlock
 	if json.Unmarshal(m.Content, &blocks) != nil {
@@ -198,7 +202,8 @@ func mtimeMs(path string) int64 {
 	return info.ModTime().UnixMilli()
 }
 
-// 子 agent 的 transcript 放在 <目录>/<会话ID>/subagents/ 下，主文件在它们运行期间不会更新
+// Sub-agent transcripts live under <dir>/<sessionID>/subagents/ and the main file doesn't
+// update while they run
 func newestSubagentMtimeMs(transcript string) int64 {
 	dir := filepath.Join(strings.TrimSuffix(transcript, filepath.Ext(transcript)), "subagents")
 	entries, err := os.ReadDir(dir)

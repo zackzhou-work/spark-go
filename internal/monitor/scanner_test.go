@@ -60,10 +60,11 @@ func TestHookPermissionPromptWinsUntilTranscriptMovesOn(t *testing.T) {
 	pending := activity(ToolPending, 10_000)
 	expectState(t, DetermineSessionState(idleProcess(), pending, asked, now, now, now), Waiting)
 
-	// 用户授权后工具结果写入 transcript，比 hook 事件更新
+	// After the user approves, the tool result lands in the transcript, newer than the
+	// hook event
 	expectState(t, DetermineSessionState(idleProcess(), activity(Generating, 1_000), asked, now, now, now), Running)
 
-	// 没有进程时 hook 不起作用
+	// A hook does nothing without a process
 	expectState(t, DetermineSessionState(nil, pending, asked, now, now, now), Completed)
 }
 
@@ -72,7 +73,8 @@ func TestHookedSessionDoesNotGuessWaitingFromIdleTool(t *testing.T) {
 }
 
 func TestIdleNotificationDoesNotMaskAPermissionWait(t *testing.T) {
-	// hook 文件一个会话只留最后一条事件，等授权时来的 idle 通知会把 PermissionRequest 盖掉
+	// A hook file keeps only a session's last event, so an idle notification arriving while
+	// waiting for approval replaces the PermissionRequest
 	expectState(t, DetermineSessionState(idleProcess(), activity(ToolPending, 120_000), hook(HookOther, 5_000), now, now, now), Waiting)
 }
 
@@ -81,9 +83,9 @@ func TestFinishedTurnIsUnreadUntilTheDesktopFocusesIt(t *testing.T) {
 	focusedBefore := now - 30_000
 	expectState(t, DetermineSessionState(idleProcess(), ended, nil, now, focusedBefore, now), Unread)
 	expectState(t, DetermineSessionState(idleProcess(), ended, nil, now, now, now), Completed)
-	// 进程退了也照样分未读/已读，桌面端侧栏就是这么标的
+	// A dead process still separates unread from read; that's how the desktop sidebar marks it
 	expectState(t, DetermineSessionState(nil, ended, nil, now, focusedBefore, now), Unread)
-	// 从没聚焦过的会话（lastFocusedAt 缺失按 0 读）算没看过
+	// A session never focused (a missing lastFocusedAt reads as 0) counts as unseen
 	expectState(t, DetermineSessionState(nil, ended, nil, now, 0, now), Unread)
 }
 
@@ -102,7 +104,7 @@ func candidate(pid, parent int, start int64) processCandidate {
 }
 
 func TestInheritedChildrenDoNotReplaceTheCoreProcess(t *testing.T) {
-	// 91963 是长期存活的核心进程，其余都是它派生的短命子进程
+	// 91963 is the long-lived core process; the rest are short-lived children it spawned
 	core := candidate(91963, 600, 100)
 	core.hasChildren, core.cpuUsage = true, 12
 	live := pickCoreProcesses(map[string][]processCandidate{
@@ -125,7 +127,8 @@ func TestSessionsStayIndependent(t *testing.T) {
 }
 
 func TestOldestWinsWhenTheChildHangsOffAnIntermediateProcess(t *testing.T) {
-	// 实测：短命进程挂在中间进程下，父进程不在组里，只能靠启动时间区分
+	// Observed: a short-lived process hangs off an intermediate one, so its parent isn't in
+	// the group and only start time tells them apart
 	live := pickCoreProcesses(map[string][]processCandidate{
 		"local_a": {candidate(29160, 29159, 1_789_892_447), candidate(19140, 19139, 1_789_892_121)},
 	})
@@ -182,7 +185,8 @@ func TestSplitWaitingLiftsWaitingSessionsOut(t *testing.T) {
 	}
 }
 
-// SPARK_REAL=1 go test -run TestScanRealSessions -v 打印本机真实会话，用来核对扫描结果
+// SPARK_REAL=1 go test -run TestScanRealSessions -v prints this machine's real sessions, to
+// check what the scan finds
 func TestScanRealSessions(t *testing.T) {
 	if os.Getenv("SPARK_REAL") == "" {
 		t.Skip("set SPARK_REAL=1 to scan this machine")

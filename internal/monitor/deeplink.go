@@ -2,7 +2,7 @@ package monitor
 
 import "strings"
 
-// 桌面端会话 ID 的格式：local_ 前缀加 1..=64 个字母数字或连字符
+// Desktop session IDs are a local_ prefix plus 1..=64 alphanumerics or hyphens
 func isDesktopSessionID(id string) bool {
 	rest, ok := strings.CutPrefix(id, "local_")
 	if !ok || len(rest) < 1 || len(rest) > 64 {
@@ -17,8 +17,9 @@ func isDesktopSessionID(id string) bool {
 	return true
 }
 
-// SessionDeeplink 是 Claude Desktop 的私有深链，用会话 ID 直接定位到 Code 标签页里的那个会话。
-// ID 格式对不上多半意味着桌面端换了格式，深链整体已经失效
+// SessionDeeplink is Claude Desktop's private deep link, addressing a session in the Code
+// tab by ID. An ID that doesn't match usually means the desktop app changed its format and
+// the link is dead
 func SessionDeeplink(sessionID string) (string, bool) {
 	if !isDesktopSessionID(sessionID) {
 		return "", false

@@ -11,7 +11,8 @@ import (
 	"github.com/zackzhou-work/spark-go/internal/monitor"
 )
 
-// mood 是项目角色的表情，取项目里最紧急的那个会话状态
+// mood is a project character's expression, taken from the most urgent session state in
+// the project
 type mood int
 
 const (
@@ -22,16 +23,19 @@ const (
 	moodCount
 )
 
-// prop 是角色身体外面的小物件：等你时头顶的气泡，待读时右下角的数字
+// prop is the small mark outside a character's body: a bubble overhead when you're needed,
+// a count at the lower right when there's something to read
 type prop struct {
 	glyph string
 	count int
-	// ring 是数字角标的描边色，跟角色所在卡片的底色一致；fill 和 ink 是角标本身，暗色界面里反过来用浅色。都留空就用设计稿的颜色
+	// ring is the badge outline, matching the card the character sits on; fill and ink are
+	// the badge itself, inverted to light on a dark interface. All empty uses the design's
+	// colours
 	ring, fill, ink ui.Color
 }
 
-// projectLook 按 needs you › working › to read › caught up 的优先级取表情。
-// 气泡里 ! 是等授权，? 是等回答；角标数的是没看过的会话
+// projectLook picks the expression by priority: needs you > working > to read > caught up.
+// A ! in the bubble is an approval, ? a question; the badge counts unseen sessions
 func projectLook(g monitor.ProjectGroup) (mood, prop) {
 	m, p := moodCaughtUp, prop{}
 	for _, s := range g.Sessions {
@@ -61,19 +65,19 @@ func waitGlyph(r monitor.WaitReason) string {
 	return "!"
 }
 
-// corner 是一个角的椭圆半径，按身体宽高的比例
+// corner is one corner's elliptical radius, as a fraction of the body's width and height
 type corner struct{ rx, ry float32 }
 
-// body 是一种身体的形状
+// body is one body shape
 type body struct {
-	height float32 // 64 宽的画框里身体有多高，居中放
-	rotate float32 // 度，负数逆时针
+	height float32 // body height inside a 64-wide frame, centred
+	rotate float32 // degrees, negative is counter-clockwise
 	radii  [4]corner
 }
 
 func even(r float32) corner { return corner{r, r} }
 
-// 依次是圆、水滴、豆子、方块、团子
+// In order: circle, droplet, bean, square, dumpling
 var bodies = [5]body{
 	{height: 64, radii: [4]corner{even(.5), even(.5), even(.5), even(.5)}},
 	{height: 64, rotate: -15, radii: [4]corner{even(.5), even(.5), even(.5), even(14.0 / 64)}},
@@ -82,21 +86,24 @@ var bodies = [5]body{
 	{height: 64, rotate: -15, radii: [4]corner{even(.45), even(.55), even(.5), even(.5)}},
 }
 
-// 依次是黄、蓝、红、棕、灰
+// In order: yellow, blue, red, brown, grey
 var hues = [5]ui.Color{ui.Hex("#FFBF01"), ui.Hex("#419CFB"), ui.Hex("#F75655"), ui.Hex("#B2774B"), ui.Hex("#8C8C8C")}
 
-// character 是一个角色：颜色和形状各取各的，五乘五共 25 种
+// character is one character: colour and shape are chosen independently, five by five for
+// 25 in all
 type character struct {
 	color ui.Color
 	body
 }
 
-// characterOf 用种子的不同位数分别挑颜色和形状，两者互不牵连
+// characterOf takes colour and shape from different digits of the seed so the two stay
+// independent
 func characterOf(seed uint32) character {
 	return character{color: hues[seed%uint32(len(hues))], body: bodies[seed/uint32(len(hues))%uint32(len(bodies))]}
 }
 
-// castSeed 是第 hue 种颜色配第 shape 种形状的种子，给预览和空状态摆指定的角色用
+// castSeed is the seed pairing the hue-th colour with the shape-th shape, for placing
+// specific characters in the preview and the empty state
 func castSeed(hue, shape int) uint32 {
 	return uint32(hue + shape*len(hues))
 }
@@ -121,7 +128,8 @@ const (
 	nudgeEvery = 1400 * time.Millisecond
 )
 
-// avatar 画项目的角色，尺寸按 64px 的设计稿等比缩放；气泡和角标会画到方框外面一点，周围要留空
+// avatar draws a project's character, scaled from the 64px design. The bubble and badge
+// spill a little past the box, so leave room around it
 func avatar(c *ui.Context, project string, m mood, p prop, size float32) ui.Element {
 	return avatarOf(c, projectSeed(project), m, p, size).Label(project)
 }
@@ -130,7 +138,8 @@ func avatarOf(c *ui.Context, seed uint32, m mood, p prop, size float32) ui.Eleme
 	ch := characterOf(seed)
 	box := ui.Box(c).Size(size, size)
 
-	// 每种表情各有一个出场程度，换表情时旧的压扁消失、新的从扁处长出来，像眨了一下眼
+	// Each expression has its own entry progress: on a change the old one squashes away and
+	// the new one grows out of the squash, like a blink
 	var shown [moodCount]float32
 	for i := range shown {
 		target := float32(0)
@@ -150,15 +159,15 @@ func avatarOf(c *ui.Context, seed uint32, m mood, p prop, size float32) ui.Eleme
 	})
 }
 
-// pose 是某一刻画出来的样子
+// pose is what gets drawn at one instant
 type pose struct {
 	mood   mood
-	squash float32 // 五官竖直方向的缩放，换表情时经过 0
-	blink  float32 // 只作用在眼睛上
-	glance float32 // 工作中瞳孔左右的偏移
-	nudge  float32 // 气泡上下浮动
-	bubble float32 // 气泡出场程度
-	badge  float32 // 角标出场程度
+	squash float32 // vertical scale of the features, passing through 0 on an expression change
+	blink  float32 // applies to the eyes only
+	glance float32 // left/right pupil offset while working
+	nudge  float32 // the bubble bobbing up and down
+	bubble float32 // bubble entry progress
+	badge  float32 // badge entry progress
 }
 
 func settle(shown [moodCount]float32) pose {
@@ -179,7 +188,8 @@ func settle(shown [moodCount]float32) pose {
 	}
 }
 
-// idle 加上随时间的小动作：睁眼的表情会眨眼，工作中左右瞟，气泡上下浮；返回下一次需要重画的时间
+// idle adds the small time-driven motions: open-eyed expressions blink, a working one
+// glances side to side, a bubble bobs. It returns when the next repaint is due
 func idle(p *pose, seed uint32, now time.Time) time.Duration {
 	next := time.Hour
 	ms := now.UnixMilli() + int64(seed%7919)
@@ -207,7 +217,8 @@ func idle(p *pose, seed uint32, now time.Time) time.Duration {
 	return next
 }
 
-// glance 让工作中的角色大部分时间盯着右边的活，偶尔瞟一眼左边
+// glance keeps a working character looking right at the task most of the time, with an
+// occasional glance left
 func glance(ms int64) (float32, time.Duration) {
 	const hold, look, reach = 2200 * time.Millisecond, 700 * time.Millisecond, -7
 	period := hold + glanceSpan + look + glanceSpan
@@ -226,8 +237,9 @@ func glance(ms int64) (float32, time.Duration) {
 
 func ease(t float64) float32 { return float32(0.5 - 0.5*math.Cos(t*math.Pi)) }
 
-// shape 把以画框中心为原点、64px 设计稿单位的坐标换算到屏幕上，再写进路径。
-// 五官先绕 pivot 竖直缩放、再随身体旋转，和设计稿里五官是身体的子元素一致
+// shape maps coordinates in 64px design units, origin at the frame centre, onto the screen
+// and into the path. Features scale vertically about pivot first, then rotate with the
+// body, matching the design where features are children of the body
 type shape struct {
 	path     ui.Path
 	cx, cy   float32
@@ -235,7 +247,7 @@ type shape struct {
 	cos, sin float32
 	pivot    float32
 	sy       float32
-	// spin 是单个部件自己的旋转，比如斜着的眉毛
+	// spin is a part's own rotation, such as a slanted eyebrow
 	spin *[4]float32
 }
 
@@ -271,7 +283,8 @@ func (s *shape) cube(x1, y1, x2, y2, x, y float32) {
 
 const kappa = 0.5522847498
 
-// roundRect 加一个以 (x, y) 为中心、每个角半径不同的圆角矩形；角的顺序是左上、右上、右下、左下
+// roundRect adds a rounded rectangle centred on (x, y) with a different radius per corner,
+// ordered top-left, top-right, bottom-right, bottom-left
 func (s *shape) roundRect(x, y, w, h float32, radii [4][2]float32) {
 	l, t, r, b := x-w/2, y-h/2, x+w/2, y+h/2
 	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
@@ -292,7 +305,7 @@ func (s *shape) ellipse(x, y, rx, ry float32) {
 	s.roundRect(x, y, rx*2, ry*2, [4][2]float32{c, c, c, c})
 }
 
-// pill 是两头圆的短横条，degrees 是它绕自己中心的旋转
+// pill is a bar with rounded ends; degrees rotates it about its own centre
 func (s *shape) pill(x, y, w, h, degrees float32) {
 	cos, sin := turn(degrees)
 	s.spin = &[4]float32{x, y, cos, sin}
@@ -301,7 +314,7 @@ func (s *shape) pill(x, y, w, h, degrees float32) {
 	s.spin = nil
 }
 
-// arc 是半个椭圆的线条，ry 为负时拱起（∩），为正时下弯（∪）
+// arc is a half-ellipse line: a negative ry arches up (∩), positive curves down (∪)
 func (s *shape) arc(x, base, rx, ry float32) {
 	s.move(x-rx, base)
 	s.cube(x-rx, base+ry*kappa, x-rx*kappa, base+ry, x, base+ry)
@@ -330,7 +343,8 @@ func paintAvatar(pt *ui.Painter, r ui.Rect, ch character, p pose, pr prop) {
 	}
 }
 
-// paintFace 照设计稿画四种表情，坐标是 64px 画框里相对中心 (32, 32) 的偏移
+// paintFace draws the four expressions from the design; coordinates are offsets from the
+// centre (32, 32) of the 64px frame
 func paintFace(pt *ui.Painter, base *shape, p pose) {
 	layer := func(blink bool) *shape {
 		s := *base
@@ -369,7 +383,8 @@ func paintFace(pt *ui.Painter, base *shape, p pose) {
 	}
 }
 
-// paintEyes 画一对眼白加瞳孔；dx 是两眼中心离中线的距离，(px, py) 是瞳孔在眼白里的偏移
+// paintEyes draws a pair of eye whites with pupils; dx is each centre's distance from the
+// midline and (px, py) the pupil's offset within the white
 func paintEyes(pt *ui.Painter, s *shape, dx, rx, ry, px, py, prx, pry float32) {
 	pupils := *s
 	for _, side := range []float32{-1, 1} {
@@ -380,7 +395,8 @@ func paintEyes(pt *ui.Painter, s *shape, dx, rx, ry, px, py, prx, pry float32) {
 	pt.FillPath(&pupils.path, eyeInk)
 }
 
-// paintBubble 画头顶右上角的白色气泡，左下角收尖指向角色
+// paintBubble draws the white bubble at the upper right, tapering to a point at its lower
+// left toward the character
 func paintBubble(pt *ui.Painter, r ui.Rect, u float32, glyph string, shown, nudge float32) {
 	w, h := 28*u*shown, 26*u*shown
 	cx, cy := r.X+64*u, r.Y+(-1-3*nudge)*u
@@ -396,7 +412,8 @@ func paintBubble(pt *ui.Painter, r ui.Rect, u float32, glyph string, shown, nudg
 	centeredText(pt, glyph, 17*u*shown, 700, eyeInk, cx, cy)
 }
 
-// paintBadge 画右下角的黑色数字角标，外圈描一道卡片底色把它和身体分开
+// paintBadge draws the black count badge at the lower right, outlined in the card colour to
+// separate it from the body
 func paintBadge(pt *ui.Painter, r ui.Rect, u float32, pr prop, shown float32) {
 	label := fmt.Sprint(pr.count)
 	fill, ink := pr.fill, pr.ink
@@ -417,8 +434,9 @@ func paintBadge(pt *ui.Painter, r ui.Rect, u float32, pr prop, shown float32) {
 	centeredText(pt, label, size, 600, ink, cx, cy)
 }
 
-// capHeight 是系统字体里数字和 ! ? 的笔画高度占字号的比例。
-// 按笔画而不是按行框居中：Painter 画文字时行框有个最小高度，小字号会整体偏下
+// capHeight is the stroke height of digits and ! ? as a fraction of the font size in the
+// system font. Centre on the strokes rather than the line box: Painter gives a line box a
+// minimum height, which pushes small sizes downward
 const capHeight = 0.71
 
 func centeredText(pt *ui.Painter, s string, size float32, weight int, c ui.Color, cx, cy float32) {
@@ -432,7 +450,9 @@ type shapeKey struct {
 	weight int
 }
 
-// glyphCache 留着排好的字形：气泡每帧都在动，不必每帧重新排版。字号取到 0.25 DIP，弹出动画里也不会攒太多
+// glyphCache keeps laid-out glyphs: the bubble moves every frame and doesn't need
+// re-laying-out each time. Sizes are quantised to 0.25 DIP so the pop animation doesn't
+// accumulate many
 var glyphCache = map[shapeKey][]ui.Glyph{}
 
 func shaped(s string, size float32, weight int) []ui.Glyph {

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Claude Code hook：把事件原样写到 ~/.config/spark/hooks/<session_id>.json，供 spark 读取
+# Claude Code hook: writes each event verbatim to ~/.config/spark/hooks/<session_id>.json for spark to read
 dir="$HOME/.config/spark/hooks"
 mkdir -p "$dir" || exit 0
 payload=$(cat)

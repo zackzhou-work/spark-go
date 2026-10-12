@@ -38,7 +38,8 @@ func main() {
 			MinWidth:  minWidth,
 			MinHeight: 300,
 			StateKey:  "main",
-			// 红绿灯离窗口左上角的偏移：x 对齐标题栏的左内边距，y 让三颗按钮和右侧的图钉落在同一条中线上
+			// Traffic light offset from the window's top-left: x lines up with the title
+			// bar's left inset, y puts the three buttons on the same centre line as the pin
 			TitleBarStyle:        mygo.TitleBarHidden,
 			TrafficLightPosition: &mygo.Point{X: 14, Y: 18},
 			Transparent:          true,
@@ -46,7 +47,8 @@ func main() {
 			Content:              ui.View(a.view),
 		})
 		a.win = win
-		// 记住的窗口尺寸不受 MinWidth 约束，以前缩得更窄的窗口在这里撑回来
+		// A remembered window size isn't subject to MinWidth, so a window narrowed earlier is
+		// widened back here
 		if w, h := win.Size(); w < minWidth {
 			win.SetSize(minWidth, h)
 		}
@@ -54,7 +56,8 @@ func main() {
 		var closed atomic.Bool
 		win.OnClosed(func() { closed.Store(true) })
 		last := a.groups
-		// 列表里的"几分钟前"不随文件变化刷新，按分钟重建一次视图
+		// The "minutes ago" labels don't refresh on file changes, so rebuild the view once a
+		// minute
 		go func() {
 			for range time.Tick(time.Minute) {
 				if closed.Load() {

@@ -7,15 +7,16 @@ import (
 	"path/filepath"
 )
 
-// HookKind 是 Claude Code hook 落盘的最近一次事件，文件名为 <cliSessionId>.json，后写覆盖先写
+// HookKind is the most recent Claude Code hook event on disk, one <cliSessionId>.json
+// per session where each write replaces the last
 type HookKind int
 
 const (
-	// HookPermissionPrompt 正在等用户授权或回答
+	// HookPermissionPrompt: waiting on the user to approve or answer
 	HookPermissionPrompt HookKind = iota
-	// HookBusy 用户提交了 prompt，或工具开始/结束执行
+	// HookBusy: the user submitted a prompt, or a tool started or finished
 	HookBusy
-	// HookStopped 回合结束或会话退出
+	// HookStopped: the turn ended or the session exited
 	HookStopped
 	HookOther
 )
@@ -25,7 +26,7 @@ type HookSignal struct {
 	AtMs int64
 }
 
-// HooksDir 是 hooks/spark-hook.sh 写事件的目录
+// HooksDir is where hooks/spark-hook.sh writes events
 func HooksDir(home string) string {
 	return filepath.Join(home, ".config", "spark", "hooks")
 }
@@ -71,7 +72,8 @@ func classifyHook(payload []byte) (HookKind, bool) {
 	return HookOther, true
 }
 
-// HookInstalled 看 ~/.claude/settings.json 里有没有挂上 spark-hook.sh。只认脚本名，不校验每个事件都配齐了
+// HookInstalled reports whether ~/.claude/settings.json names spark-hook.sh. It only
+// matches the script name and doesn't check that every event is wired up
 func HookInstalled(home string) bool {
 	content, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	return err == nil && bytes.Contains(content, []byte("spark-hook.sh"))

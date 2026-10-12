@@ -32,11 +32,12 @@ var (
 	chevronLeftIcon = ui.MustParseSVG(chevronLeftSVG)
 )
 
-// palette 是单色的界面，颜色只来自角色；亮暗两套跟随系统外观
+// palette is a monochrome interface where colour comes only from the characters; the
+// light and dark sets follow the system appearance
 type palette struct {
 	bg               ui.Color
 	ink, strong, sec ui.Color
-	// tileHot 是需要你处理的卡片，tile 是其余的卡片
+	// tileHot is a card that needs you, tile is any other card
 	tileHot, tile        ui.Color
 	fill, rowHover       ui.Color
 	pillHover            ui.Color
@@ -73,20 +74,23 @@ const (
 	filterToday = 0
 	filterAll   = 1
 
-	// 切换 Today / All 时页面和按钮滑块一起滑：先快后慢，停得柔和
+	// Switching Today / All slides the pages and the button pill together: fast then slow,
+	// easing to a stop
 	slideDuration = 260 * time.Millisecond
 
-	// 红绿灯的位置是建窗口时定死的，各种宽度下的标题栏都用这个高度，才能和图钉对齐
+	// Traffic light position is fixed when the window is created, so every title bar uses
+	// this height to keep them aligned with the pin
 	titleBarHeight = 48
 	tileRadius     = 24
 	markerSize     = 8
 
-	// 窗口宽度分两档：不到 narrowWidth 时卡片竖排。高度不参与，矮了就滚动
+	// Two width layouts: below narrowWidth the cards stack. Height doesn't matter; a short
+	// window just scrolls
 	narrowWidth = 340
-	// minWidth 是窗口能缩到的最窄宽度，再窄窄窗口的卡片也排不下
+	// minWidth is as narrow as the window goes; past it even the narrow cards stop fitting
 	minWidth = 260
 
-	// 工作中的转圈，30 帧足够看清又不必按屏幕刷新率重画
+	// The working spinner: 30 frames reads clearly without redrawing at the display's rate
 	spinPeriod = 900 * time.Millisecond
 	spinTick   = 33 * time.Millisecond
 
@@ -115,7 +119,7 @@ type app struct {
 	win    *mygo.Window
 	groups []monitor.ProjectGroup
 	filter int
-	// project 不为空时显示这个项目的详情页
+	// A non-empty project shows that project's detail page
 	project string
 	pinned  bool
 	// snoozed records waiting sessions dismissed with Later, keyed by the ActivityAt at the
@@ -185,7 +189,7 @@ func (a *app) tabs(c *ui.Context, p palette, l layout) {
 		height, pad, size, gap = 26, 10, 12, 2
 	}
 	labels := [2]string{"Today", "All"}
-	// 按字宽定死每段的宽度，滑块才能和文字对齐
+	// Fixed per-segment widths let the pill line up with the labels
 	var widths [2]float32
 	for i, label := range labels {
 		widths[i] = float32(math.Ceil(float64(textWidth(shaped(label, size, 510))))) + 2*pad
@@ -193,7 +197,7 @@ func (a *app) tabs(c *ui.Context, p palette, l layout) {
 
 	seg := ui.SegmentedBase(c, &a.filter, 2)
 	track := seg.Track.Gap(gap).Label("Filter")
-	// 选中的底色是画在轨道上的一块滑块，和页面用同一条曲线一起滑过去
+	// The selection is a pill drawn on the track, sliding with the pages on the same curve
 	x := track.AnimateWith("thumb-x", float32(a.filter)*(widths[0]+gap), slideDuration, slideEase)
 	w := track.AnimateWith("thumb-w", widths[a.filter], slideDuration, slideEase)
 	track.Draw(func(pt *ui.Painter, r ui.Rect) {
@@ -232,7 +236,8 @@ func (a *app) pinButton(c *ui.Context, p palette, size, icon float32) {
 	})
 }
 
-// pages 把 Today 和 All 并排放在一条轨道上，切换时整条轨道滑过去；静止时只建当前这一页
+// pages puts Today and All side by side on one track that slides when switching; at rest
+// only the current page is built
 func (a *app) pages(c *ui.Context, p palette, l layout) {
 	w, _ := c.Size()
 	pageWidth := max(w-2, 200)
@@ -313,7 +318,8 @@ func (a *app) todayPage(c *ui.Context, p palette, l layout, width float32) {
 	})
 }
 
-// fitColumns 是 CSS 的 repeat(auto-fill, minmax(min, 1fr))：放得下几列就几列，至少一列
+// fitColumns is CSS's repeat(auto-fill, minmax(min, 1fr)): as many columns as fit, at
+// least one
 func fitColumns(width, min, gap float32) int {
 	return max(1, int((width+gap)/(min+gap)))
 }
@@ -362,21 +368,24 @@ func heading(c *ui.Context, p palette, s string) ui.Element {
 	return ui.Text(c, s).FontSize(24).LineHeight(30.0 / 24).FontWeight(590).LetterSpacing(-0.5).TextColor(p.strong)
 }
 
-// scroller 照常滚动，但把滚动条挪到窗口外面：不画出来，也不占右边那一条的点击
+// scroller scrolls as usual but moves the scrollbar outside the window: it isn't drawn and
+// doesn't eat clicks along the right edge
 func scroller(c *ui.Context) ui.Element {
 	return ui.Scroll(c).ScrollbarInsets(0, -40, 0, 0)
 }
 
-// pageHeading 是 Today、All 页顶上那句话；窄窗口里小一号，少占点高度
+// pageHeading is the line atop the Today and All pages; one size smaller in a narrow
+// window to save height
 func pageHeading(c *ui.Context, p palette, l layout, s string) ui.Element {
 	if l == layoutNarrow {
-		// 竖排的卡片之间已经有 8 的间距，这里再补 2 凑成 10
+		// Stacked cards already have 8 between them, so 2 more makes 10
 		return ui.Text(c, s).FontSize(20).LineHeight(26.0/20).FontWeight(590).LetterSpacing(-0.4).TextColor(p.strong).Padding(0, 4, 2, 4)
 	}
 	return heading(c, p, s).Padding(0, 4, 14, 4)
 }
 
-// needsRow 是等你处理的项目：一整行，右边一个直接回到会话的按钮
+// needsRow is a project needing you: a full row with a button on the right that returns to
+// the session
 func (a *app) needsRow(c *ui.Context, p palette, card projectCard) {
 	tile := ui.Row(c).Background(p.tileHot).Radius(tileRadius).Padding(14, 12, 14, 16).Gap(14).
 		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", needs you")
@@ -391,7 +400,8 @@ func (a *app) needsRow(c *ui.Context, p palette, card projectCard) {
 	})
 }
 
-// needsStack 是窄窗口里的等你卡片：头像和名字一行，按钮占满下一行
+// needsStack is the narrow-window needs-you card: avatar and name on one line, the button
+// filling the next
 func (a *app) needsStack(c *ui.Context, p palette, card projectCard) {
 	tile := ui.Column(c).Background(p.tileHot).Radius(20).Padding(14).Gap(10).
 		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", needs you")
@@ -408,7 +418,8 @@ func (a *app) needsStack(c *ui.Context, p palette, card projectCard) {
 	})
 }
 
-// respondButton 跳回卡住的会话：等授权是黑色的 Respond，等回答是浅色的 Answer
+// respondButton returns to a stuck session: a dark Respond for an approval, a light Answer
+// for a question
 func (a *app) respondButton(c *ui.Context, p palette, s monitor.SessionItem, height, size float32) ui.Element {
 	label, primary := "Respond", true
 	if s.WaitReason == monitor.WaitQuestion {
@@ -443,14 +454,16 @@ func (a *app) smallTile(c *ui.Context, p palette, card projectCard) {
 	})
 }
 
-// projectRow 是窄窗口里不用你处理的项目，几个项目共用一张卡片，一行一个
+// projectRow is a narrow-window project that doesn't need you; several share one card, one
+// per line
 func (a *app) projectRow(c *ui.Context, p palette, card projectCard) {
 	row := ui.Row(c).Height(44).Padding(0, 12).Gap(12).Radius(16).Cursor(ui.CursorPointer).
 		Label(card.group.ProjectName + ", " + card.status())
 	hoverFill(row, row.Hovered(), p.rowHover)
 	row.OnClick(func() { a.project = card.group.ProjectName })
 	row.Children(func() {
-		// 每行给头像留同样宽的一列，带角标的那行名字才不会往右错开
+		// Every row reserves the same width for the avatar, so a badged row's name doesn't shift
+		// right
 		ui.Box(c).Width(26 + badgeRoom(projectCard{mood: moodToRead}, 26)).Children(func() {
 			avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tile), 26)
 		})
@@ -459,13 +472,14 @@ func (a *app) projectRow(c *ui.Context, p palette, card projectCard) {
 	})
 }
 
-// dressed 让角色身上的数字角标跟卡片底色和亮暗配色一致
+// dressed keeps a character's count badge in step with the card background and light/dark
+// palette
 func dressed(pr prop, p palette, ground ui.Color) prop {
 	pr.ring, pr.fill, pr.ink = ground, p.primary, p.onPrimary
 	return pr
 }
 
-// badgeRoom 是数字角标伸出头像右边的那一截，给它让出位置
+// badgeRoom is the part of the count badge sticking out past the avatar; this makes room
 func badgeRoom(card projectCard, size float32) float32 {
 	if card.mood == moodToRead {
 		return size * 9 / 64
@@ -473,7 +487,7 @@ func badgeRoom(card projectCard, size float32) float32 {
 	return 0
 }
 
-// castTile 是 All 页的角色墙，每个项目一格
+// castTile is the All page's character wall, one cell per project
 func (a *app) castTile(c *ui.Context, p palette, card projectCard) {
 	bg := p.tile
 	if card.mood == moodNeedsYou {
@@ -553,7 +567,8 @@ func (a *app) isSnoozed(s monitor.SessionItem) bool {
 	return ok && at.Equal(s.ActivityAt)
 }
 
-// waitingCard 把一个卡住的会话单独拿出来：等的是什么、多久了，回到 Claude 处理或者先放一放
+// waitingCard singles out a stuck session: what it's waiting for, how long, and buttons to
+// go handle it or put it off
 func (a *app) waitingCard(c *ui.Context, p palette, s monitor.SessionItem, now time.Time) {
 	card(c, p).Padding(16).Gap(12).Children(func() {
 		ui.Column(c).Gap(4).Children(func() {
@@ -615,7 +630,7 @@ func projectSummary(g monitor.ProjectGroup) string {
 	return strings.Join(parts, " · ")
 }
 
-// card 是带一圈细线和浅阴影的白卡片
+// card is a white card with a hairline border and a soft shadow
 func card(c *ui.Context, p palette) ui.Element {
 	return ui.Column(c).Radius(tileRadius).Border(0.5, p.hairline).Shadow(0, 4, 6, 0, p.shadow).Background(p.bg)
 }
@@ -657,7 +672,8 @@ func (a *app) sessionSection(c *ui.Context, p palette, title string, sessions []
 	})
 }
 
-// rowStyle 是会话行在不同宽度下的尺寸；窄窗口放不下时间，待读只留 New
+// rowStyle holds session row metrics per width; a narrow window has no room for the time
+// and keeps only the New pill for unread
 type rowStyle struct {
 	height, radius, padding, gap float32
 	font, meta                   float32
@@ -705,14 +721,14 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, st rowStyle, no
 	})
 }
 
-// newPill 是待读会话行尾的黑色 New
+// newPill is the black New at the end of an unread session row
 func newPill(c *ui.Context, p palette, height float32) {
 	ui.Row(c).Height(height).Padding(0, height*0.4).Radius(height / 2).Center().Shrink(0).Background(p.primary).Children(func() {
 		ui.Text(c, "New").FontSize(height * 0.6).FontWeight(510).TextColor(p.onPrimary)
 	})
 }
 
-// hoverFill 让行的悬停底色淡入淡出，而不是一下子跳出来
+// hoverFill fades a row's hover background in and out instead of snapping
 func hoverFill(row ui.Element, hovered bool, color ui.Color) {
 	target := float32(0)
 	if hovered {
@@ -723,7 +739,7 @@ func hoverFill(row ui.Element, hovered bool, color ui.Color) {
 	}
 }
 
-// trailing 平时显示距今多久，悬停时换成跳转箭头
+// trailing shows how long ago by default, swapping to a jump arrow on hover
 func trailing(c *ui.Context, p palette, hovered bool, when string, size float32) {
 	label := when
 	if hovered {
@@ -749,13 +765,15 @@ func relativeTime(t, now time.Time) string {
 	}
 }
 
-// marker 是行首的记号，只用墨色：进行中是转圈，待读是实心点，看过的是空心圈，等你的是一圈实线
+// marker is the leading glyph, ink only: a spinner while running, a filled dot when unread,
+// a hollow ring once seen, a solid ring when waiting on you
 func marker(c *ui.Context, p palette, state monitor.TaskState) {
 	dot := ui.Box(c).Size(markerSize, markerSize)
 	switch state {
 	case monitor.Running:
 		still := c.Preferences().ReduceMotion
-		// 不用 Loop：它让整个窗口按屏幕刷新率重绘。在 Draw 里按固定间隔推进，只重画、不重建视图
+		// Not Loop: that redraws the whole window at the display's rate. Stepping on a fixed
+		// interval inside Draw repaints without rebuilding the view
 		dot.Draw(func(pt *ui.Painter, r ui.Rect) {
 			turn := float32(0)
 			if !still {
@@ -778,7 +796,7 @@ func spinPhase(now time.Time) float32 {
 	return float32(now.UnixMilli()%period) / float32(period)
 }
 
-// paintSpinner 画一圈淡淡的轨道，上面一段四分之一的弧用墨色，turn 是转过的圈数
+// paintSpinner draws a faint track with a quarter arc in ink; turn counts revolutions
 func paintSpinner(pt *ui.Painter, r ui.Rect, p palette, turn float32) {
 	const width = 1.5
 	cx, cy := r.X+r.W/2, r.Y+r.H/2
@@ -803,7 +821,7 @@ func paintSpinner(pt *ui.Painter, r ui.Rect, p palette, turn float32) {
 	pt.StrokePath(&arc, width, p.ink)
 }
 
-// restingCast 是空状态里睡着的五个角色，高矮错开排
+// restingCast is the five sleeping characters in the empty state, staggered in height
 var restingCast = []struct {
 	seed uint32
 	size float32
@@ -866,7 +884,7 @@ func (a *app) hookBanner(c *ui.Context, p palette) {
 	})
 }
 
-// projectCard 是一个项目在卡片上要显示的东西
+// projectCard is what a project shows on its card
 type projectCard struct {
 	group   monitor.ProjectGroup
 	mood    mood
@@ -888,7 +906,8 @@ func (card projectCard) status() string {
 	}
 }
 
-// projectCards 按表情的紧急程度排：等你的、工作中的、待读的、都处理完的；同一档里保持原来的顺序
+// projectCards sorts by how urgent the face is: needs you, working, to read, all caught up;
+// order within a tier is preserved
 func projectCards(groups []monitor.ProjectGroup) []projectCard {
 	cards := make([]projectCard, 0, len(groups))
 	for _, g := range groups {
@@ -910,7 +929,7 @@ func projectCards(groups []monitor.ProjectGroup) []projectCard {
 	return cards
 }
 
-// unwaited 收集等你以外的会话：等你的会话已经在卡片上了
+// unwaited collects sessions other than the ones needing you, which are already on cards
 func unwaited(groups []monitor.ProjectGroup) []monitor.SessionItem {
 	var out []monitor.SessionItem
 	for _, g := range groups {
@@ -923,7 +942,7 @@ func unwaited(groups []monitor.ProjectGroup) []monitor.SessionItem {
 	return out
 }
 
-// ordered 把进行中的排最前，再是待读、看过的；同一档里新的在前
+// ordered puts running first, then unread, then seen; newest first within a tier
 func ordered(sessions []monitor.SessionItem) []monitor.SessionItem {
 	rank := func(s monitor.TaskState) int {
 		switch s {
@@ -952,7 +971,8 @@ type daySessions struct {
 	sessions []monitor.SessionItem
 }
 
-// byDay 按最后活动的日子分成 Today、Yesterday 和 Earlier，保持传进来的顺序
+// byDay splits by last activity into Today, Yesterday and Earlier, keeping the incoming
+// order
 func byDay(sessions []monitor.SessionItem, now time.Time) []daySessions {
 	days := []daySessions{{label: "Today"}, {label: "Yesterday"}, {label: "Earlier"}}
 	y, m, d := now.Date()

@@ -18,8 +18,9 @@ import (
 
 const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
-// SPARK_BANNER=1 go test -run TestBanner . 重新生成 docs/banner.png：
-// 先无窗口渲染 app 界面，再用无头 Chrome 把 docs/banner/index.html 排成横幅
+// SPARK_BANNER=1 go test -run TestBanner . regenerates docs/banner.png: render the app's
+// interface without a window, then lay it out as a banner with headless Chrome and
+// docs/banner/index.html
 func TestBanner(t *testing.T) {
 	if os.Getenv("SPARK_BANNER") == "" {
 		t.Skip("set SPARK_BANNER=1 to regenerate docs/banner.png")
@@ -40,7 +41,8 @@ func TestBanner(t *testing.T) {
 	}
 }
 
-// SPARK_ICON=1 go test -run TestIcon . 用无头 Chrome 把 docs/icon/index.html 渲染成 resources/icon.png
+// SPARK_ICON=1 go test -run TestIcon . renders docs/icon/index.html into resources/icon.png
+// with headless Chrome
 func TestIcon(t *testing.T) {
 	if os.Getenv("SPARK_ICON") == "" {
 		t.Skip("set SPARK_ICON=1 to regenerate resources/icon.png")
@@ -60,20 +62,22 @@ func TestIcon(t *testing.T) {
 	}
 }
 
-// renderDemoApp 用虚构的会话渲染 Today 页，悬停在一行上露出跳转箭头
+// renderDemoApp renders the Today page with made-up sessions, hovering a row to reveal the
+// jump arrow
 func renderDemoApp() *image.RGBA {
 	a := demoApp()
 	const scale = 2
 	tt := ui.NewTester(a.view, 360, 640)
 	tt.SetScale(scale)
-	// 角色不眨眼、气泡不浮动，截到的是每种表情的静止姿态
+	// Characters don't blink and bubbles don't bob, so each expression is captured at rest
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
 	tt.Frame()
 	r, _ := tt.Find("Upgrade the router to v7")
 	tt.Move(r.X+40, r.Y+r.H/2)
 	tt.Frame()
 
-	// 红绿灯是系统画的，无窗口渲染里没有，照原位补上
+	// The traffic lights are drawn by the system and absent from a windowless render, so put
+	// them back in place
 	img := tt.Image()
 	for i, c := range []color.RGBA{{0xFF, 0x5F, 0x57, 0xFF}, {0xFE, 0xBC, 0x2E, 0xFF}, {0x28, 0xC8, 0x40, 0xFF}} {
 		fillCircle(img, (20+float64(i)*20)*scale, 24*scale, 6*scale, c)
@@ -81,7 +85,7 @@ func renderDemoApp() *image.RGBA {
 	return img
 }
 
-// demoApp 是一组虚构的会话，覆盖四种状态
+// demoApp is a set of made-up sessions covering all four states
 func demoApp() *app {
 	now := time.Now()
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -110,7 +114,7 @@ func demoApp() *app {
 	}}
 }
 
-// fillCircle 画一个边缘抗锯齿的实心圆
+// fillCircle draws a filled circle with an anti-aliased edge
 func fillCircle(img *image.RGBA, cx, cy, radius float64, c color.RGBA) {
 	for y := int(cy - radius - 1); y <= int(cy+radius+1); y++ {
 		for x := int(cx - radius - 1); x <= int(cx+radius+1); x++ {

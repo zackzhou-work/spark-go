@@ -14,14 +14,14 @@ func TestRealSessionIDBuildsURL(t *testing.T) {
 
 func TestRejectsIDsTheDesktopAppWouldNotMatch(t *testing.T) {
 	for _, id := range []string{
-		// 没有 local_ 前缀：cliSessionId 和 bridgeSessionId 都走不了这条链
+		// No local_ prefix: neither a cliSessionId nor a bridgeSessionId reaches this path
 		"1f079f2a-8c74-449d-b254-1be4a5d9b0d8",
 		"session_01NSKvUJpEpTmqnEih8Y3g8R",
 		"local_",
-		// 下划线不在允许的字符集里
+		// Underscores aren't in the allowed character set
 		"local_has_underscore",
 		"local_" + strings.Repeat("a", 65),
-		// 会话 JSON 缺 sessionId 时 scanner 会填这个占位值
+		// The placeholder the scanner fills in when a session JSON has no sessionId
 		"session",
 	} {
 		if _, ok := SessionDeeplink(id); ok {

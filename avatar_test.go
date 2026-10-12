@@ -73,12 +73,13 @@ func TestGlanceStaysInsideTheEye(t *testing.T) {
 	}
 }
 
-// AVATAR_PNG=out.png go test -run TestAvatarGallery . 把预览窗口无窗口渲染成图片
+// AVATAR_PNG=out.png go test -run TestAvatarGallery . renders the preview window to an image
+// without opening a window
 func TestAvatarGallery(t *testing.T) {
 	g := &avatarGallery{}
 	tt := ui.NewTester(g.view, 560, 640)
 	tt.SetScale(2)
-	// 关掉待机小动作，截到的是每种表情的静止姿态
+	// Idle motions off, so each expression is captured at rest
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
 	tt.Frame()
 	if !tt.HasText("All caught up") {
@@ -94,7 +95,7 @@ func TestAvatarGallery(t *testing.T) {
 	}
 }
 
-// 角标里的数字按字形的实际笔画居中，而不是按行框
+// The badge digit centres on the glyph's strokes, not the line box
 func TestBadgeDigitIsCentered(t *testing.T) {
 	for _, size := range []float32{64, 48, 34} {
 		for _, count := range []int{1, 7, 12} {
@@ -105,7 +106,8 @@ func TestBadgeDigitIsCentered(t *testing.T) {
 	}
 }
 
-// badgeDigitOffset 渲染一个待读角色，返回角标里数字笔画中心相对黑色底中心的偏移
+// badgeDigitOffset renders an unread character and returns the offset of the digit's stroke
+// centre from the black badge's centre
 func badgeDigitOffset(size float32, count int) (dx, dy float64) {
 	const pad, scale = 20, 2
 	view := func(c *ui.Context) {
@@ -119,7 +121,8 @@ func badgeDigitOffset(size float32, count int) (dx, dy float64) {
 	tt.Frame()
 	img := tt.Image()
 
-	// 只看右下角，避开嘴巴和眼睛的黑色笔画：黑色是角标底，底里面的白色是数字
+	// Look only at the lower right, avoiding the black strokes of the mouth and eyes: black
+	// is the badge, and white inside it is the digit
 	u := size / 64
 	x0, y0 := int((pad+40*u)*scale), int((pad+44*u)*scale)
 	dark, digit := [4]int{1 << 30, 1 << 30, -1, -1}, [4]int{1 << 30, 1 << 30, -1, -1}
