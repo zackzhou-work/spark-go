@@ -351,3 +351,35 @@ func TestSkipsSubagentThreads(t *testing.T) {
 		t.Errorf("subagent threads should be skipped, got %+v", got)
 	}
 }
+
+// A sub-agent rollout starts with its own meta and then replays the parent's, which has no
+// parent_thread_id. The parent's meta must not overwrite what the first one said, or the
+// sub-agent shows up as a session titled after the parent's prompt
+func TestSubagentMetaReplayKeepsSubagentFlag(t *testing.T) {
+	parent := "01a13337-57d0-7453-a319-7ad00258eb21"
+	body := `{"type":"session_meta","payload":{"id":"` + threadA + `","parent_thread_id":"` + parent + `","thread_source":"subagent","cwd":"/Users/me/work/acme"}}` + "\n" +
+		`{"type":"session_meta","payload":{"id":"` + parent + `","thread_source":"user","cwd":"/Users/me/work/acme"}}` + "\n" +
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"split the persistence layer"}]}}` + "\n" +
+		`{"type":"event_msg","payload":{"type":"task_complete"}}` + "\n"
+	dir := t.TempDir()
+	path := writeRollout(t, dir, "rollout-2026-10-12T17-20-37-"+threadA+".jsonl", body)
+	got, ok := ReadCodexRollout(path)
+	if !ok {
+		t.Fatal("rollout should be readable")
+	}
+	if !got.Subagent {
+		t.Error("the first session_meta should still mark this a subagent thread")
+	}
+	if got.Cwd != "/Users/me/work/acme" {
+		t.Errorf("cwd = %q", got.Cwd)
+	}
+
+	s := &Scanner{
+		CodexRoot:    filepath.Dir(dir),
+		CodexHome:    dir,
+		CodexHookDir: CodexHookDir(dir),
+	}
+	if found := s.scanCodex(nowTime()); len(found) != 0 {
+		t.Errorf("subagent threads should be skipped, got %+v", found)
+	}
+}

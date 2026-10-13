@@ -248,6 +248,7 @@ type codexRecord struct {
 func codexHeader(f *os.File) (cwd, title string, subagent bool) {
 	reader := bufio.NewReaderSize(f, 64*1024)
 	read := 0
+	metaSeen := false
 	for read < codexHeadBytes {
 		line, err := reader.ReadBytes('\n')
 		read += len(line)
@@ -256,8 +257,14 @@ func codexHeader(f *os.File) (cwd, title string, subagent bool) {
 			if json.Unmarshal(line, &r) == nil {
 				switch r.Type {
 				case "session_meta":
-					cwd = r.Payload.Cwd
-					subagent = r.Payload.ParentThreadID != ""
+					// A sub-agent rollout carries its own meta first and then replays the
+					// parent's, which has no parent_thread_id. Only the first meta says what
+					// this file is; a later one can only fill in a missing cwd
+					if !metaSeen {
+						metaSeen = true
+						subagent = r.Payload.ParentThreadID != ""
+					}
+					cwd = cmp.Or(cwd, r.Payload.Cwd)
 				case "response_item":
 					if title == "" && r.Payload.Role == "user" {
 						title = codexUserText(r.Payload.Content)
