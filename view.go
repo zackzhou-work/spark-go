@@ -85,9 +85,9 @@ const (
 	// minWidth 是窗口能缩到的最窄宽度，再窄窄窗口的卡片也排不下
 	minWidth = 260
 
-	// 工作中的转圈，30 帧足够看清又不必按屏幕刷新率重画
+	// 工作中的转圈只有 8px，15 帧就够顺，每一帧都要整窗重画
 	spinPeriod = 900 * time.Millisecond
-	spinTick   = 33 * time.Millisecond
+	spinTick   = 66 * time.Millisecond
 
 	rowHoverFade = 140 * time.Millisecond
 

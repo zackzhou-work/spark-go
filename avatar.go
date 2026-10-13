@@ -115,7 +115,7 @@ func projectSeed(name string) uint32 {
 
 const (
 	faceShift  = 240 * time.Millisecond
-	idleFrame  = 16 * time.Millisecond
+	idleFrame  = 33 * time.Millisecond
 	blinkSpan  = 180 * time.Millisecond
 	glanceSpan = 260 * time.Millisecond
 	nudgeEvery = 1400 * time.Millisecond

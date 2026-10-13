@@ -52,6 +52,15 @@ type Scanner struct {
 	ProjectsRoot string
 	HooksDir     string
 	cpu          *cpuSampler
+	sessions     map[string]cachedSession
+}
+
+// 会话 JSON 有几百个，绝大多数早就不变了；按 mtime 和大小判断，没变就不重新读
+type cachedSession struct {
+	modTime time.Time
+	size    int64
+	data    rawSessionJSON
+	ok      bool
 }
 
 func NewScanner() *Scanner {
@@ -64,6 +73,7 @@ func NewScanner() *Scanner {
 		ProjectsRoot: filepath.Join(home, ".claude", "projects"),
 		HooksDir:     HooksDir(home),
 		cpu:          newCPUSampler(),
+		sessions:     map[string]cachedSession{},
 	}
 }
 
@@ -165,17 +175,14 @@ func (s *Scanner) Scan() []ProjectGroup {
 	now := time.Now()
 	nowMs := now.UnixMilli()
 	var found []discovered
+	seen := make(map[string]cachedSession, len(s.sessions))
 
 	_ = filepath.WalkDir(s.SessionsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || filepath.Ext(path) != ".json" {
 			return nil
 		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		var data rawSessionJSON
-		if json.Unmarshal(content, &data) != nil || data.IsArchived {
+		data, ok := s.readSession(path, d, seen)
+		if !ok || data.IsArchived {
 			return nil
 		}
 
@@ -231,8 +238,29 @@ func (s *Scanner) Scan() []ProjectGroup {
 		found = append(found, discovered{project, item, activityTs})
 		return nil
 	})
+	s.sessions = seen
 
 	return groupByProject(found)
+}
+
+// readSession 读一个会话 JSON，文件没变就直接用上次的结果；读到的都记进 seen，删掉的文件随之淘汰
+func (s *Scanner) readSession(path string, d fs.DirEntry, seen map[string]cachedSession) (rawSessionJSON, bool) {
+	info, err := d.Info()
+	if err != nil {
+		return rawSessionJSON{}, false
+	}
+	if c, ok := s.sessions[path]; ok && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
+		seen[path] = c
+		return c.data, c.ok
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return rawSessionJSON{}, false
+	}
+	c := cachedSession{modTime: info.ModTime(), size: info.Size()}
+	c.ok = json.Unmarshal(content, &c.data) == nil
+	seen[path] = c
+	return c.data, c.ok
 }
 
 // 时间戳可能是毫秒也可能是秒，按量级区分
