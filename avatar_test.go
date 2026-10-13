@@ -45,19 +45,101 @@ func TestProjectKeepsItsCharacter(t *testing.T) {
 }
 
 func TestColorAndShapeArePickedApart(t *testing.T) {
-	type pair struct{ hue, shape int }
-	seen := map[pair]bool{}
-	for i := range 2000 {
-		ch := characterOf(projectSeed(fmt.Sprintf("project-%d", i)))
-		seen[pair{slices.Index(hues[:], ch.color), slices.IndexFunc(bodies[:], func(b body) bool { return b == ch.body })}] = true
+	seen := map[character]bool{}
+	for i := range 4000 {
+		seen[characterOf(projectSeed(fmt.Sprintf("project-%d", i)))] = true
 	}
 	if len(seen) != len(hues)*len(bodies) {
 		t.Fatalf("project names should reach all %d pairings, reached %d", len(hues)*len(bodies), len(seen))
 	}
-	for h := range hues {
-		for b := range bodies {
-			if ch := characterOf(castSeed(h, b)); ch.color != hues[h] || ch.body != bodies[b] {
-				t.Errorf("castSeed(%d, %d) should give hue %d with body %d", h, b, h, b)
+}
+
+func groupsNamed(names ...string) []monitor.ProjectGroup {
+	groups := make([]monitor.ProjectGroup, len(names))
+	for i, n := range names {
+		groups[i] = monitor.ProjectGroup{ProjectName: n}
+	}
+	return groups
+}
+
+// clashing finds n project names that all hash to the same character
+func clashing(n int) []string {
+	byCharacter := map[character][]string{}
+	for i := 0; ; i++ {
+		name := fmt.Sprintf("project-%d", i)
+		ch := characterOf(projectSeed(name))
+		byCharacter[ch] = append(byCharacter[ch], name)
+		if len(byCharacter[ch]) == n {
+			return byCharacter[ch]
+		}
+	}
+}
+
+func TestCastKeepsUnclashedCharacters(t *testing.T) {
+	names := []string{"spark-go", "joyspace-ai", "OpenPaper"}
+	cast := castCharacters(groupsNamed(names...))
+	for _, n := range names {
+		if want := characterOf(projectSeed(n)); cast[n] != want {
+			t.Errorf("%s should keep its own character %v, got %v", n, want, cast[n])
+		}
+	}
+}
+
+func TestCastMovesClashesToUnusedHues(t *testing.T) {
+	names := clashing(3)
+	cast := castCharacters(groupsNamed(names...))
+	first := characterOf(projectSeed(names[0]))
+	if cast[names[0]] != first {
+		t.Errorf("the first name in order should keep its character")
+	}
+	hues := map[int]bool{}
+	for _, n := range names {
+		if cast[n].shape != first.shape {
+			t.Errorf("%s should keep its shape when moved, got %v", n, cast[n])
+		}
+		hues[cast[n].hue] = true
+	}
+	if len(hues) != len(names) {
+		t.Errorf("clashing projects should spread over different hues, got %v", cast)
+	}
+}
+
+func TestCastNeverRepeatsUntilFull(t *testing.T) {
+	total := len(hues) * len(bodies)
+	var names []string
+	for i := range total {
+		names = append(names, fmt.Sprintf("p%d", i))
+	}
+	cast := castCharacters(groupsNamed(names...))
+	seen := map[character]bool{}
+	for _, ch := range cast {
+		seen[ch] = true
+	}
+	if len(seen) != total {
+		t.Fatalf("%d projects should get %d different characters, got %d", total, total, len(seen))
+	}
+}
+
+func TestCastIgnoresGroupOrder(t *testing.T) {
+	names := append(clashing(4), "spark-go", "infra")
+	reversed := slices.Clone(names)
+	slices.Reverse(reversed)
+	a, b := castCharacters(groupsNamed(names...)), castCharacters(groupsNamed(reversed...))
+	for _, n := range names {
+		if a[n] != b[n] {
+			t.Errorf("%s got %v and %v depending on group order", n, a[n], b[n])
+		}
+	}
+}
+
+// TestBodiesStayInsideTheFrame keeps the outlines from growing past the box the bubble and
+// badge already spill out of
+func TestBodiesStayInsideTheFrame(t *testing.T) {
+	for i, b := range bodies {
+		for _, p := range b.outline {
+			if p.x < -36 || p.x > 36 || p.y < -36 || p.y > 36 {
+				t.Errorf("body %d reaches (%.1f, %.1f), outside the 64px frame plus a little margin", i, p.x, p.y)
+				break
 			}
 		}
 	}
@@ -77,7 +159,7 @@ func TestGlanceStaysInsideTheEye(t *testing.T) {
 // without opening a window
 func TestAvatarGallery(t *testing.T) {
 	g := &avatarGallery{}
-	tt := ui.NewTester(g.view, 560, 640)
+	tt := ui.NewTester(g.view, 840, 960)
 	tt.SetScale(2)
 	// Idle motions off, so each expression is captured at rest
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
@@ -112,7 +194,7 @@ func badgeDigitOffset(size float32, count int) (dx, dy float64) {
 	const pad, scale = 20, 2
 	view := func(c *ui.Context) {
 		ui.Box(c).Fill().Background(ui.Hex("#FFFFFF")).Padding(pad).Children(func() {
-			avatarOf(c, 0, moodToRead, prop{count: count}, size)
+			avatarOf(c, character{}, 0, moodToRead, prop{count: count}, size)
 		})
 	}
 	tt := ui.NewTester(view, 160, 160)

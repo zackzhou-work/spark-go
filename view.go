@@ -129,6 +129,9 @@ type app struct {
 	// prompts for them individually
 	hookInstalled      bool
 	codexHookInstalled bool
+	// cast is the character each project was given, handed out across all projects at once so
+	// that projects on screen clash as little as possible
+	cast map[string]character
 }
 
 func (a *app) view(c *ui.Context) {
@@ -139,6 +142,7 @@ func (a *app) view(c *ui.Context) {
 	}
 	w, _ := c.Size()
 	l := layoutFor(w)
+	a.cast = castCharacters(a.groups)
 
 	ui.Column(c).Fill().Radius(12).Border(1, p.edge).Background(p.bg).TextColor(p.ink).Clip().Children(func() {
 		a.titleBar(c, p, l)
@@ -391,7 +395,7 @@ func (a *app) needsRow(c *ui.Context, p palette, card projectCard) {
 		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", needs you")
 	tile.OnClick(func() { a.project = card.group.ProjectName })
 	tile.Children(func() {
-		avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tileHot), 40)
+		a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tileHot), 40)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Text(c, card.group.ProjectName).SingleLine().FontSize(16).LineHeight(20.0 / 16).FontWeight(510)
 			ui.Text(c, waitLine(card.waiting.WaitReason)).SingleLine().FontSize(14).LineHeight(20.0 / 14).TextColor(p.sec)
@@ -408,7 +412,7 @@ func (a *app) needsStack(c *ui.Context, p palette, card projectCard) {
 	tile.OnClick(func() { a.project = card.group.ProjectName })
 	tile.Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
-			avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tileHot), 34)
+			a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tileHot), 34)
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				ui.Text(c, card.group.ProjectName).SingleLine().FontSize(15).LineHeight(20.0 / 15).FontWeight(510)
 				ui.Text(c, waitLine(card.waiting.WaitReason)).SingleLine().FontSize(13).LineHeight(18.0 / 13).TextColor(p.sec)
@@ -445,7 +449,7 @@ func (a *app) smallTile(c *ui.Context, p palette, card projectCard) {
 	tile.OnClick(func() { a.project = card.group.ProjectName })
 	tile.Children(func() {
 		ui.Box(c).Margin(0, badgeRoom(card, 30), 0, 0).Children(func() {
-			avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tile), 30)
+			a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tile), 30)
 		})
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Text(c, card.group.ProjectName).SingleLine().FontSize(14).LineHeight(20.0 / 14).FontWeight(510)
@@ -465,7 +469,7 @@ func (a *app) projectRow(c *ui.Context, p palette, card projectCard) {
 		// Every row reserves the same width for the avatar, so a badged row's name doesn't shift
 		// right
 		ui.Box(c).Width(26 + badgeRoom(projectCard{mood: moodToRead}, 26)).Children(func() {
-			avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tile), 26)
+			a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tile), 26)
 		})
 		ui.Text(c, card.group.ProjectName).SingleLine().Grow(1).MinWidth(0).FontSize(14).FontWeight(510)
 		ui.Text(c, card.status()).Shrink(0).FontSize(12).TextColor(p.sec)
@@ -497,7 +501,7 @@ func (a *app) castTile(c *ui.Context, p palette, card projectCard) {
 		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", " + card.status())
 	tile.OnClick(func() { a.project = card.group.ProjectName })
 	tile.Children(func() {
-		avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, bg), 36)
+		a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, bg), 36)
 		ui.Column(c).AlignItems(ui.Center).MinWidth(0).FillWidth().Children(func() {
 			ui.Text(c, card.group.ProjectName).SingleLine().TextAlign(ui.Center).FontSize(14).LineHeight(20.0 / 14).FontWeight(510)
 			status := ui.Text(c, card.status()).SingleLine().TextAlign(ui.Center).FontSize(12).LineHeight(1.5)
@@ -531,7 +535,7 @@ func (a *app) projectPage(c *ui.Context, p palette, g monitor.ProjectGroup) {
 			})
 
 			ui.Column(c).Background(p.tileHot).Radius(tileRadius).Padding(24, 16, 20, 16).Gap(14).AlignItems(ui.Center).Children(func() {
-				ui.Box(c).Padding(8, 0, 0, 0).Children(func() { avatar(c, g.ProjectName, m, dressed(pr, p, p.tileHot), 72) })
+				ui.Box(c).Padding(8, 0, 0, 0).Children(func() { a.avatar(c, g.ProjectName, m, dressed(pr, p, p.tileHot), 72) })
 				ui.Column(c).Gap(4).AlignItems(ui.Center).MinWidth(0).FillWidth().Children(func() {
 					heading(c, p, g.ProjectName).SingleLine().TextAlign(ui.Center)
 					ui.Text(c, projectSummary(g)).FontSize(14).LineHeight(20.0 / 14).TextAlign(ui.Center).TextColor(p.sec)
@@ -821,11 +825,12 @@ func paintSpinner(pt *ui.Painter, r ui.Rect, p palette, turn float32) {
 	pt.StrokePath(&arc, width, p.ink)
 }
 
-// restingCast is the five sleeping characters in the empty state, staggered in height
+// restingCast is the five sleeping characters in the empty state, staggered in height and
+// spread across the body shapes
 var restingCast = []struct {
-	seed uint32
+	who  character
 	size float32
-}{{castSeed(0, 0), 38}, {castSeed(1, 1), 46}, {castSeed(4, 4), 42}, {castSeed(2, 2), 38}, {castSeed(3, 3), 36}}
+}{{character{0, 0}, 38}, {character{1, 4}, 46}, {character{4, 3}, 42}, {character{2, 7}, 38}, {character{3, 6}, 36}}
 
 func (a *app) emptyState(c *ui.Context, p palette, filter int, width float32) {
 	ui.Column(c).Width(width).Children(func() {
@@ -833,7 +838,7 @@ func (a *app) emptyState(c *ui.Context, p palette, filter int, width float32) {
 			AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			ui.Row(c).Gap(12).AlignItems(ui.End).Children(func() {
 				for i, who := range restingCast {
-					avatarOf(c.Key(i), who.seed, moodCaughtUp, prop{}, who.size)
+					avatarOf(c.Key(i), who.who, uint32(i), moodCaughtUp, prop{}, who.size)
 				}
 			})
 			ui.Column(c).Gap(8).AlignItems(ui.Center).Children(func() {
