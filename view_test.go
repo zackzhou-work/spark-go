@@ -96,7 +96,7 @@ func TestAllShowsEveryProjectAndGroupsByDay(t *testing.T) {
 	a := demoApp()
 	a.filter = filterAll
 	tt := newViewTester(a, 360, 640)
-	for _, s := range []string{"Every agent.", "5 projects · 11 sessions", "Needs you", "All caught up", "Today", "Yesterday", "Earlier", "Migrate to the new auth client"} {
+	for _, s := range []string{"Every agent.", "6 projects · 13 sessions", "Needs you", "All caught up", "Today", "Yesterday", "Earlier", "Migrate to the new auth client", "Port the release script to Go"} {
 		if !tt.HasText(s) {
 			t.Errorf("All should show %q; it shows %q", s, tt.Texts())
 		}

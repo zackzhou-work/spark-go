@@ -85,7 +85,7 @@ func renderDemoApp() *image.RGBA {
 	return img
 }
 
-// demoApp is a set of made-up sessions covering all four states
+// demoApp is a set of made-up sessions covering all four states, from both agents
 func demoApp() *app {
 	now := time.Now()
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -110,6 +110,10 @@ func demoApp() *app {
 		}},
 		{ProjectName: "infra", Sessions: []monitor.SessionItem{
 			{ID: "local_11", Title: "Rotate the staging certificates", State: monitor.Completed, ActivityAt: ago(3 * time.Hour), IsToday: true},
+		}},
+		{ProjectName: "spark-cli", Sessions: []monitor.SessionItem{
+			{ID: "01a12f69-fdb1-7173-b784-47189d9442d7", Source: monitor.SourceCodex, Title: "Port the release script to Go", State: monitor.Running, ActivityAt: now, IsToday: true},
+			{ID: "01a12f6a-004f-7b00-a3db-568255912b84", Source: monitor.SourceCodex, Title: "Ship the 0.4 roadmap", State: monitor.Unread, ActivityAt: ago(21 * time.Minute), IsToday: true},
 		}},
 	}}
 }
