@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -65,47 +66,70 @@ func waitGlyph(r monitor.WaitReason) string {
 	return "!"
 }
 
-// corner is one corner's elliptical radius, as a fraction of the body's width and height
-type corner struct{ rx, ry float32 }
-
-// body is one body shape
-type body struct {
-	height float32 // body height inside a 64-wide frame, centred
-	rotate float32 // degrees, negative is counter-clockwise
-	radii  [4]corner
-}
-
-func even(r float32) corner { return corner{r, r} }
-
-// In order: circle, droplet, bean, square, dumpling
-var bodies = [5]body{
-	{height: 64, radii: [4]corner{even(.5), even(.5), even(.5), even(.5)}},
-	{height: 64, rotate: -15, radii: [4]corner{even(.5), even(.5), even(.5), even(14.0 / 64)}},
-	{height: 64, radii: [4]corner{{.5, .6}, {.5, .6}, {.5, .4}, {.5, .4}}},
-	{height: 54, radii: [4]corner{{16.0 / 64, 16.0 / 54}, {16.0 / 64, 16.0 / 54}, {16.0 / 64, 16.0 / 54}, {16.0 / 64, 16.0 / 54}}},
-	{height: 64, rotate: -15, radii: [4]corner{even(.45), even(.55), even(.5), even(.5)}},
-}
-
 // In order: yellow, blue, red, brown, grey
-var hues = [5]ui.Color{ui.Hex("#FFBF01"), ui.Hex("#419CFB"), ui.Hex("#F75655"), ui.Hex("#B2774B"), ui.Hex("#8C8C8C")}
+var hues = [...]ui.Color{ui.Hex("#FFBF01"), ui.Hex("#419CFB"), ui.Hex("#F75655"), ui.Hex("#B2774B"), ui.Hex("#8C8C8C")}
 
-// character is one character: colour and shape are chosen independently, five by five for
-// 25 in all
-type character struct {
-	color ui.Color
-	body
-}
+// character is one character: the hue-th colour from hues paired with the shape-th shape from
+// bodies
+type character struct{ hue, shape int }
+
+func (ch character) color() ui.Color { return hues[ch.hue] }
+func (ch character) body() body      { return bodies[ch.shape] }
 
 // characterOf takes colour and shape from different digits of the seed so the two stay
 // independent
 func characterOf(seed uint32) character {
-	return character{color: hues[seed%uint32(len(hues))], body: bodies[seed/uint32(len(hues))%uint32(len(bodies))]}
+	return character{hue: int(seed % uint32(len(hues))), shape: int(seed / uint32(len(hues)) % uint32(len(bodies)))}
 }
 
-// castSeed is the seed pairing the hue-th colour with the shape-th shape, for placing
-// specific characters in the preview and the empty state
-func castSeed(hue, shape int) uint32 {
-	return uint32(hue + shape*len(hues))
+// castCharacters hands out characters to a set of projects. It walks them in name order,
+// starting from the one each name hashes to; a project whose character is already taken keeps
+// its shape and changes colour, preferring a colour nobody has yet, and only then takes any
+// free pairing. Once every pairing is used up nothing is staggered and projects share
+func castCharacters(groups []monitor.ProjectGroup) map[string]character {
+	names := make([]string, len(groups))
+	for i, g := range groups {
+		names[i] = g.ProjectName
+	}
+	slices.Sort(names)
+	cast := make(map[string]character, len(names))
+	taken := map[character]bool{}
+	var hueUsed [len(hues)]bool
+	for _, name := range names {
+		ch := characterOf(projectSeed(name))
+		if taken[ch] {
+			ch = freeCharacter(ch, taken, hueUsed)
+		}
+		cast[name] = ch
+		taken[ch], hueUsed[ch.hue] = true, true
+	}
+	return cast
+}
+
+// freeCharacter moves a wanted character off a clash: first to an unused colour with the same
+// shape, then to any free colour with that shape, then to any free pairing at all
+func freeCharacter(want character, taken map[character]bool, hueUsed [len(hues)]bool) character {
+	free := func(hue, shape int) bool { return !taken[character{hue, shape}] }
+	nextHue := func(i int) int { return (want.hue + i) % len(hues) }
+	for i := 1; i < len(hues); i++ {
+		if h := nextHue(i); !hueUsed[h] && free(h, want.shape) {
+			return character{h, want.shape}
+		}
+	}
+	for i := 1; i < len(hues); i++ {
+		if h := nextHue(i); free(h, want.shape) {
+			return character{h, want.shape}
+		}
+	}
+	for j := 1; j < len(bodies); j++ {
+		shape := (want.shape + j) % len(bodies)
+		for i := range len(hues) {
+			if h := nextHue(i); free(h, shape) {
+				return character{h, shape}
+			}
+		}
+	}
+	return want
 }
 
 var (
@@ -129,13 +153,19 @@ const (
 )
 
 // avatar draws a project's character, scaled from the 64px design. The bubble and badge
-// spill a little past the box, so leave room around it
-func avatar(c *ui.Context, project string, m mood, p prop, size float32) ui.Element {
-	return avatarOf(c, projectSeed(project), m, p, size).Label(project)
+// spill a little past the box, so leave room around it. The cast decides which character a
+// project gets; a project missing from it falls back to its own name
+func (a *app) avatar(c *ui.Context, project string, m mood, p prop, size float32) ui.Element {
+	seed := projectSeed(project)
+	ch, ok := a.cast[project]
+	if !ok {
+		ch = characterOf(seed)
+	}
+	return avatarOf(c, ch, seed, m, p, size).Label(project)
 }
 
-func avatarOf(c *ui.Context, seed uint32, m mood, p prop, size float32) ui.Element {
-	ch := characterOf(seed)
+// avatarOf draws one given character; the seed only staggers when each character blinks
+func avatarOf(c *ui.Context, ch character, seed uint32, m mood, p prop, size float32) ui.Element {
 	box := ui.Box(c).Size(size, size)
 
 	// Each expression has its own entry progress: on a change the old one squashes away and
@@ -325,15 +355,24 @@ func paintAvatar(pt *ui.Painter, r ui.Rect, ch character, p pose, pr prop) {
 	u := r.W / 64
 	cx, cy := r.X+r.W/2, r.Y+r.H/2
 
-	body := newShape(cx, cy, u, ch.rotate)
-	var radii [4][2]float32
-	for i, k := range ch.radii {
-		radii[i] = [2]float32{k.rx * 64, k.ry * ch.height}
+	b := ch.body()
+	body := newShape(cx, cy, u, b.rotate)
+	if len(b.outline) > 0 {
+		body.move(b.outline[0].x, b.outline[0].y)
+		for _, q := range b.outline[1:] {
+			body.line(q.x, q.y)
+		}
+		body.path.Close()
+	} else {
+		var radii [4][2]float32
+		for i, k := range b.radii {
+			radii[i] = [2]float32{k.rx * 64, k.ry * b.height}
+		}
+		body.roundRect(0, 0, 64, b.height, radii)
 	}
-	body.roundRect(0, 0, 64, ch.height, radii)
-	pt.FillPath(&body.path, ch.color)
+	pt.FillPath(&body.path, ch.color())
 
-	paintFace(pt, newShape(cx, cy, u, ch.rotate), p)
+	paintFace(pt, newShape(cx, cy+b.faceY*u, u, b.rotate), p)
 
 	if p.bubble > 0.01 && pr.glyph != "" {
 		paintBubble(pt, r, u, pr.glyph, p.bubble, p.nudge)

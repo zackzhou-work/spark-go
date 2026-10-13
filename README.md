@@ -32,7 +32,7 @@ spark watches two agents: Claude Desktop's Code tab, and Codex.
 - **`electron-thread-read-state-v1` in `~/.codex/.codex-global-state.json`**: the list of threads the desktop app still marks unread, which plays the same role as Claude's `lastFocusedAt`.
 - Codex threads aren't separate processes the way `claude` is, so spark can only tell that Codex is running at all, and falls back to "has this rollout been quiet for 30 minutes" for the rest.
 
-Each project gets a character, picked by hashing its name, and the character's face shows the most urgent state among the project's sessions: needs you › working › to read › all caught up. Rows keep an ink-only marker that matches the dot in the desktop app's sidebar:
+Each project gets a character — eight body shapes by five colours, forty in all — picked by hashing its name, and the character's face shows the most urgent state among the project's sessions: needs you › working › to read › all caught up. Two projects that hash to the same character are pulled apart so a screenful doesn't repeat: the later one keeps its shape and takes a colour nobody is using. Rows keep an ink-only marker that matches the dot in the desktop app's sidebar:
 
 | spark character | spark row | Desktop sidebar | Meaning |
 | --- | --- | --- | --- |

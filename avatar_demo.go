@@ -11,7 +11,7 @@ import (
 var moodNames = [...]string{"Needs you", "Working", "To read", "All caught up"}
 
 // avatarGallery is the character preview window: expressions to switch between and watch
-// transition up top, five characters by four expressions below
+// transition up top, one row per body shape with four expressions below
 type avatarGallery struct {
 	mood mood
 }
@@ -37,7 +37,7 @@ func (g *avatarGallery) view(c *ui.Context) {
 
 		ui.Row(c).Gap(32).Padding(16, 0, 8, 0).Children(func() {
 			for i := range bodies {
-				avatarOf(c.Key(fmt.Sprint("big", i)), castSeed(i, i), g.mood, demoProp(i), 64)
+				avatarOf(c.Key(fmt.Sprint("big", i)), demoCharacter(i), uint32(i), g.mood, demoProp(i), 64)
 			}
 		})
 
@@ -51,13 +51,18 @@ func (g *avatarGallery) view(c *ui.Context) {
 				ui.Row(c).Gap(8).Children(func() {
 					for m := range moodNames {
 						ui.Row(c).Width(88).Center().Children(func() {
-							avatarOf(c.Key(fmt.Sprint(i, "-", m)), castSeed(i, i), mood(m), demoProp(i), 48)
+							avatarOf(c.Key(fmt.Sprint(i, "-", m)), demoCharacter(i), uint32(i), mood(m), demoProp(i), 48)
 						})
 					}
 				})
 			}
 		})
 	})
+}
+
+// demoCharacter gives every body shape a turn, cycling through the colours
+func demoCharacter(i int) character {
+	return character{hue: i % len(hues), shape: i}
 }
 
 // demoProp makes the preview show both ! and ? bubbles along with single- and multi-digit
@@ -67,7 +72,7 @@ func demoProp(i int) prop {
 	if i%2 == 1 {
 		glyph = "?"
 	}
-	return prop{glyph: glyph, count: []int{1, 2, 3, 1, 12}[i]}
+	return prop{glyph: glyph, count: []int{1, 2, 3, 1, 12}[i%len(hues)]}
 }
 
 func runAvatarGallery() {
@@ -75,8 +80,8 @@ func runAvatarGallery() {
 	mygo.App.WhenReady(func() {
 		mygo.NewWindow(mygo.WindowOptions{
 			Title:   "Spark characters",
-			Width:   560,
-			Height:  680,
+			Width:   840,
+			Height:  960,
 			Content: ui.View(g.view),
 		})
 	})
