@@ -87,6 +87,9 @@ const (
 	// Two width layouts: below narrowWidth the cards stack. Height doesn't matter; a short
 	// window just scrolls
 	narrowWidth = 340
+	// With both hooks missing, this page width leaves enough room for the banner buttons and
+	// a readable prose column on the same row.
+	hookBannerInlineMinWidth = 440
 	// minWidth is as narrow as the window goes; past it even the narrow cards stop fitting
 	minWidth = 260
 
@@ -900,11 +903,10 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 // hookBanner prompts for the hook: without it an approval prompt can only be guessed at.
 // Claude and Codex hooks install separately, so whichever is missing gets offered
 func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
-	// One button fits beside the prose, two do not, and neither does one in a narrow window.
-	// The prose column holds MinWidth(0), so it is the one that gives way: squeezed below
-	// the width of its longest word the paragraph breaks mid-word, and squeezed further it
-	// wraps to a character a line and grows tall enough to push the card above it out of the
-	// window. Stack the buttons under the prose instead
+	// In a narrow window, or when two buttons leave too little room for the prose, stack the
+	// actions below it. The prose column holds MinWidth(0), so it gives way first: squeezed
+	// further, it wraps to a character a line and grows tall enough to push the card above it
+	// out of the window.
 	missing := 0
 	if !a.hookInstalled {
 		missing++
@@ -912,7 +914,7 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 	if !a.codexHookInstalled {
 		missing++
 	}
-	stacked := missing > 1 || l == layoutNarrow
+	stacked := l == layoutNarrow || (missing > 1 && width < hookBannerInlineMinWidth)
 	prose := func(grow bool) {
 		text := ui.Column(c).MinWidth(0)
 		if grow {
