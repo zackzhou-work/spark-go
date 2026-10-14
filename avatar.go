@@ -33,6 +33,10 @@ type prop struct {
 	// the badge itself, inverted to light on a dark interface. All empty uses the design's
 	// colours
 	ring, fill, ink ui.Color
+	// sep, when set, is the ground the character stands on, stroked around its body before
+	// the body is filled. Only the outer half of that stroke survives, so it cuts the
+	// character out of whatever is stacked behind it. Empty draws no separator
+	sep ui.Color
 }
 
 // projectLook picks the expression by priority: needs you > working > to read > caught up.
@@ -313,6 +317,11 @@ func (s *shape) cube(x1, y1, x2, y2, x, y float32) {
 
 const kappa = 0.5522847498
 
+// sepRatio is the separator stroke as a fraction of a character's size. The stroke is
+// centred on the body and its inner half is covered by the fill, so the band that shows
+// between two stacked characters is sepRatio/2 of a size
+const sepRatio = 0.075
+
 // roundRect adds a rounded rectangle centred on (x, y) with a different radius per corner,
 // ordered top-left, top-right, bottom-right, bottom-left
 func (s *shape) roundRect(x, y, w, h float32, radii [4][2]float32) {
@@ -369,6 +378,12 @@ func paintAvatar(pt *ui.Painter, r ui.Rect, ch character, p pose, pr prop) {
 			radii[i] = [2]float32{k.rx * 64, k.ry * b.height}
 		}
 		body.roundRect(0, 0, 64, b.height, radii)
+	}
+	// The separator is stroked first so the fill covers its inner half: what is left is a
+	// band of sepRatio/2 around the body, which cuts it out of the character behind it.
+	// Characters paint left to right, so the right-hand one is the one that cuts
+	if pr.sep.A > 0 {
+		pt.StrokePath(&body.path, sepRatio*r.W, pr.sep)
 	}
 	pt.FillPath(&body.path, ch.color())
 

@@ -87,6 +87,9 @@ const (
 	// Two width layouts: below narrowWidth the cards stack. Height doesn't matter; a short
 	// window just scrolls
 	narrowWidth = 340
+	// With both hooks missing, this page width leaves enough room for the banner buttons and
+	// a readable prose column on the same row.
+	hookBannerInlineMinWidth = 440
 	// minWidth is as narrow as the window goes; past it even the narrow cards stop fitting
 	minWidth = 260
 
@@ -269,7 +272,7 @@ func (a *app) pages(c *ui.Context, p palette, l layout) {
 func (a *app) todayPage(c *ui.Context, p palette, l layout, width float32) {
 	today := monitor.TodayGroups(a.groups)
 	if len(today) == 0 {
-		a.emptyState(c, p, filterToday, width)
+		a.emptyState(c, p, l, filterToday, width)
 		return
 	}
 	cards := projectCards(today)
@@ -341,7 +344,7 @@ func splitNeeds(cards []projectCard) (needs, rest []projectCard) {
 
 func (a *app) allPage(c *ui.Context, p palette, l layout, width float32) {
 	if len(a.groups) == 0 {
-		a.emptyState(c, p, filterAll, width)
+		a.emptyState(c, p, l, filterAll, width)
 		return
 	}
 	now := time.Now()
@@ -832,13 +835,49 @@ var restingCast = []struct {
 	size float32
 }{{character{0, 0}, 38}, {character{1, 4}, 46}, {character{4, 3}, 42}, {character{2, 7}, 38}, {character{3, 6}, 36}}
 
-func (a *app) emptyState(c *ui.Context, p palette, filter int, width float32) {
+const (
+	// restingOverlap is how far each character in the empty state is pulled over the one
+	// before it. The five are 200pt of boxes inside a card that is only 186pt wide at the
+	// narrowest window, and a fixed Size() box cannot shrink, so without an overlap the row
+	// paints straight past the card. 6pt is the most that still leaves every character's
+	// expression readable
+	restingOverlap = 6
+	// restingInk is what the five characters span at 1x: 200pt of boxes less four 6pt
+	// overlaps, plus the 1-2pt each outline shape overflows its own box. It is a
+	// measurement rather than a sum because those ink extents are worked out while drawing
+	// and are not stored on the body
+	restingInk = 177.1
+	// restingFill is how much of the card the row aims to span once the window is wide
+	// enough to grow into, and restingCap stops a wide window from turning the same screen
+	// into a different one
+	restingFill = 0.72
+	restingCap  = 1.3
+)
+
+// restingScale is how much the empty state's cast grows in a wide window. The row is the
+// only thing there whose size the type does not set, so it is what keeps the card from
+// looking empty; it never shrinks below the app's real sizes
+func restingScale(width float32) float32 {
+	// the card's content box: window − margins (24) − padding (48)
+	inner := width - 72
+	return min(restingCap, max(1, inner*restingFill/restingInk))
+}
+
+func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width float32) {
 	ui.Column(c).Width(width).Children(func() {
 		ui.Column(c).Grow(1).Margin(4, 12, 0, 12).Background(p.tileHot).Radius(tileRadius).Padding(24).Gap(24).
 			AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			ui.Row(c).Gap(12).AlignItems(ui.End).Children(func() {
+			scale := restingScale(width)
+			ui.Row(c).AlignItems(ui.End).Children(func() {
 				for i, who := range restingCast {
-					avatarOf(c.Key(i), who.who, uint32(i), moodCaughtUp, prop{}, who.size)
+					cast := avatarOf(c.Key(i), who.who, uint32(i), moodCaughtUp,
+						prop{sep: p.tileHot}, who.size*scale)
+					if i > 0 {
+						// A negative left margin pulls this character over the one before it,
+						// so the five overlap rather than running past the card. They paint in
+						// order, so the right-hand character is the one on top
+						cast.Margin(0, 0, 0, -restingOverlap*scale)
+					}
 				}
 			})
 			ui.Column(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -854,7 +893,7 @@ func (a *app) emptyState(c *ui.Context, p palette, filter int, width float32) {
 			}
 		})
 		if !a.hookInstalled || !a.codexHookInstalled {
-			a.hookBanner(c, p)
+			a.hookBanner(c, p, l)
 		} else {
 			ui.Box(c).Height(12)
 		}
@@ -863,12 +902,30 @@ func (a *app) emptyState(c *ui.Context, p palette, filter int, width float32) {
 
 // hookBanner prompts for the hook: without it an approval prompt can only be guessed at.
 // Claude and Codex hooks install separately, so whichever is missing gets offered
-func (a *app) hookBanner(c *ui.Context, p palette) {
-	ui.Row(c).Margin(12).Radius(16).Border(1, p.line).Padding(12, 12, 12, 16).Gap(12).Children(func() {
-		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
+	// In a narrow window, or when two buttons leave too little room for the prose, stack the
+	// actions below it. The prose column holds MinWidth(0), so it gives way first: squeezed
+	// further, it wraps to a character a line and grows tall enough to push the card above it
+	// out of the window.
+	missing := 0
+	if !a.hookInstalled {
+		missing++
+	}
+	if !a.codexHookInstalled {
+		missing++
+	}
+	stacked := l == layoutNarrow || (missing > 1 && width < hookBannerInlineMinWidth)
+	prose := func(grow bool) {
+		text := ui.Column(c).MinWidth(0)
+		if grow {
+			text.Grow(1)
+		}
+		text.Children(func() {
 			ui.Text(c, "Hear about prompts right away").FontSize(14).LineHeight(20.0 / 14).FontWeight(510)
 			ui.Text(c, "Install the hook so spark doesn’t have to guess.").FontSize(12).LineHeight(1.5).TextColor(p.sec)
 		})
+	}
+	install := func() {
 		if !a.hookInstalled {
 			pillButton(c, p, "Install", false, 32, 14).OnClick(func() { openURL(c, hookGuideURL) })
 		}
@@ -886,6 +943,20 @@ func (a *app) hookBanner(c *ui.Context, p palette) {
 				a.codexHookInstalled = true
 			})
 		}
+	}
+
+	ui.Column(c).Margin(12).Radius(16).Border(1, p.line).Padding(12, 12, 12, 16).Gap(10).Children(func() {
+		if stacked {
+			prose(false)
+			// the two buttons can still be wider than the banner between them, so let them
+			// wrap rather than push out past its edge
+			ui.Row(c).Gap(8).Wrap().Children(install)
+			return
+		}
+		ui.Row(c).Gap(12).Children(func() {
+			prose(true)
+			install()
+		})
 	})
 }
 
