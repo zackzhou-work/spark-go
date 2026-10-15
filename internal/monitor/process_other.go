@@ -15,6 +15,8 @@ func listProcesses() []procInfo { return nil }
 
 func hostSessionID(int) (string, bool) { return "", false }
 
+func processAlive(int) bool { return false }
+
 type cpuSampler struct{}
 
 func newCPUSampler() *cpuSampler { return &cpuSampler{} }
