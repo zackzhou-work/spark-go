@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 )
@@ -195,7 +196,13 @@ func TestScanRealSessions(t *testing.T) {
 	for _, g := range groups {
 		t.Logf("Project: %s (%d sessions)", g.ProjectName, len(g.Sessions))
 		for _, s := range g.Sessions {
-			t.Logf("  - [%v] %s (PID: %d, today=%v)", s.State, s.Title, s.PID, s.IsToday)
+			// pi is the one source whose state depends on where it runs, so say what it
+			// found: a pane means clicking the row can go there
+			extra := ""
+			if s.Source == SourcePi {
+				extra = fmt.Sprintf(" pane=%q live=%v", s.Pane, !s.NoSignal)
+			}
+			t.Logf("  - [%v] %s (%v, PID: %d, today=%v%s)", s.State, s.Title, s.Source, s.PID, s.IsToday, extra)
 		}
 	}
 	if len(groups) == 0 {

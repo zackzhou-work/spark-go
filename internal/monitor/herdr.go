@@ -97,7 +97,6 @@ func (c HerdrClient) Agents() ([]HerdrAgent, error) {
 			PaneID       string `json:"pane_id"`
 			Status       string `json:"agent_status"`
 			Focused      bool   `json:"focused"`
-			Cwd          string `json:"cwd"`
 			AgentSession struct {
 				Value string `json:"value"`
 			} `json:"agent_session"`
@@ -117,7 +116,6 @@ func (c HerdrClient) Agents() ([]HerdrAgent, error) {
 			Status:      a.Status,
 			Focused:     a.Focused,
 			SessionPath: a.AgentSession.Value,
-			Cwd:         a.Cwd,
 		})
 	}
 	return out, nil

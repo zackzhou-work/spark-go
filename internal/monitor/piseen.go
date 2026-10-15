@@ -24,6 +24,9 @@ type PiSeen struct {
 	at      map[string]int64
 	dirty   bool
 	savedAt time.Time
+	// fresh says there was nothing on disk, so this run adopts what it finds rather than
+	// calling every session that finished before today new
+	fresh bool
 }
 
 // PiSeenPath is spark's own state file, next to the window's
@@ -35,15 +38,22 @@ func NewPiSeen(path string) *PiSeen {
 	seen := &PiSeen{path: path, at: map[string]int64{}}
 	content, err := os.ReadFile(path)
 	if err != nil {
+		seen.fresh = true
 		return seen
 	}
-	_ = json.Unmarshal(content, &seen.at)
+	if json.Unmarshal(content, &seen.at) != nil {
+		seen.fresh = true
+		return seen
+	}
 	// Saving is throttled from the file's own age, so a restart doesn't rewrite it at once
 	if info, err := os.Stat(path); err == nil {
 		seen.savedAt = info.ModTime()
 	}
 	return seen
 }
+
+// Fresh reports whether nothing had been recorded yet
+func (s *PiSeen) Fresh() bool { return s != nil && s.fresh }
 
 func (s *PiSeen) Seen(key string) int64 {
 	if s == nil || key == "" {

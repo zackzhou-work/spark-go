@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	"bufio"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -251,5 +253,77 @@ func TestScanPiDoesNotGoLookingForOldSessions(t *testing.T) {
 	s := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: filepath.Join(root, "missing.sock")}
 	if found := s.scanPi(time.Now()); len(found) != 0 {
 		t.Errorf("found %d old sessions, want none: %+v", len(found), found)
+	}
+}
+
+// serveHerdr answers one agent.list per connection from a socket at path
+func serveHerdr(t *testing.T, path, reply string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				if _, err := bufio.NewReader(conn).ReadBytes('\n'); err != nil {
+					return
+				}
+				_, _ = conn.Write([]byte(reply + "\n"))
+			}()
+		}
+	}()
+}
+
+// A turn that finished in a Herdr pane is new only if the user hasn't been back since. The
+// first run has nothing to compare against, so it adopts what it finds instead of calling
+// every session ever finished new
+func TestScanPiReadsHerdrAndOnlyReportsWhatHappensAfterTheFirstRun(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	path := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_session.jsonl",
+		piHeader("session", cwd)+
+			`{"type":"message","id":"m1","timestamp":"2026-10-15T10:00:05.000Z","message":{"role":"user","content":"start a turn"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"2026-10-15T10:00:09.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}`+"\n")
+
+	socket := shortSocketPath(t)
+	serveHerdr(t, socket, `{"id":"spark","result":{"type":"agent_list","agents":[{"agent":"pi","pane_id":"w4:pC",`+
+		`"agent_status":"idle","focused":false,"agent_session":{"kind":"path","value":"`+path+`"}}]}}`)
+
+	// A store that already exists: nothing has recorded the user looking at this session
+	seenPath := filepath.Join(root, "pi-seen.json")
+	if err := os.WriteFile(seenPath, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: socket, piSeen: NewPiSeen(seenPath)}
+	found := s.scanPi(time.Now())
+	if len(found) != 1 {
+		t.Fatalf("found %d sessions: %+v", len(found), found)
+	}
+	if found[0].item.State != Unread {
+		t.Errorf("state = %v, want Unread for a turn the user hasn't looked at", found[0].item.State)
+	}
+	if found[0].item.Pane != "w4:pC" || found[0].item.NoSignal {
+		t.Errorf("Herdr's pane should carry the row: %+v", found[0].item)
+	}
+
+	// The first run has no history: it takes what it finds as read
+	fresh := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: socket,
+		piSeen: NewPiSeen(filepath.Join(root, "fresh.json"))}
+	found = fresh.scanPi(time.Now())
+	if len(found) != 1 {
+		t.Fatalf("found %d sessions: %+v", len(found), found)
+	}
+	if found[0].item.State != Completed {
+		t.Errorf("state = %v, want Completed on the first run", found[0].item.State)
 	}
 }

@@ -84,6 +84,25 @@ func TestPrunePiReceiptsDropsFinishedSessionsOnly(t *testing.T) {
 	}
 }
 
+func TestPiSeenKnowsAFreshStore(t *testing.T) {
+	if got := NewPiSeen(filepath.Join(t.TempDir(), "pi-seen.json")); !got.Fresh() {
+		t.Error("a store with no file behind it is fresh")
+	}
+	path := filepath.Join(t.TempDir(), "pi-seen.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := NewPiSeen(path); got.Fresh() {
+		t.Error("a store that was written before is not fresh")
+	}
+	if err := os.WriteFile(path, []byte("not json"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := NewPiSeen(path); !got.Fresh() {
+		t.Error("an unreadable store is treated as fresh rather than as authoritative")
+	}
+}
+
 func TestPiSeenRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pi-seen.json")
 	seen := NewPiSeen(path)

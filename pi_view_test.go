@@ -6,6 +6,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,8 +22,44 @@ func piWaitingSession(id, title, pane string) monitor.SessionItem {
 	}
 }
 
+// jumpRecorder collects what the jump did, from the goroutine that did it
+type jumpRecorder struct {
+	mu      sync.Mutex
+	focused []string
+	raised  []string
+}
+
+func (r *jumpRecorder) focus(target string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.focused = append(r.focused, target)
+}
+
+func (r *jumpRecorder) raise(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.raised = append(r.raised, name)
+}
+
+// wait blocks until both the focus call and the window raise have happened
+func (r *jumpRecorder) wait(t *testing.T, pane, app string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		got = strings.Join(r.focused, ",") + " / " + strings.Join(r.raised, ",")
+		r.mu.Unlock()
+		if strings.Contains(got, pane) && strings.Contains(got, app) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("the jump did %q, want focus %s and raise %s", got, pane, app)
+}
+
 // fakeHerdrSocket serves the Herdr API from a socket under home, recording the focus calls
-func fakeHerdrSocket(t *testing.T, home string) *[]string {
+func fakeHerdrSocket(t *testing.T, home string, rec *jumpRecorder) {
 	t.Helper()
 	dir := filepath.Join(home, ".config", "herdr")
 	_ = dir
@@ -35,7 +73,6 @@ func fakeHerdrSocket(t *testing.T, home string) *[]string {
 	}
 	t.Cleanup(func() { ln.Close() })
 
-	var focused []string
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -57,27 +94,12 @@ func fakeHerdrSocket(t *testing.T, home string) *[]string {
 				}
 				if req.Method == "agent.focus" {
 					target, _ := req.Params["target"].(string)
-					focused = append(focused, target)
+					rec.focus(target)
 				}
 				_, _ = conn.Write([]byte(`{"id":"spark","result":{"type":"agent_info","agent":{}}}` + "\n"))
 			}()
 		}
 	}()
-	return &focused
-}
-
-func waitForFocus(t *testing.T, focused *[]string, want string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, got := range *focused {
-			if got == want {
-				return
-			}
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("focus calls = %v, want %s", *focused, want)
 }
 
 // shortHome is a HOME whose socket path still fits unix's ~104 character limit
@@ -97,10 +119,10 @@ func shortHome(t *testing.T) string {
 func TestPiRowInHerdrFocusesThePane(t *testing.T) {
 	home := shortHome(t)
 	t.Setenv("HOME", home)
-	focused := fakeHerdrSocket(t, home)
-	raised := ""
+	rec := &jumpRecorder{}
+	fakeHerdrSocket(t, home, rec)
 	restore := activateApp
-	activateApp = func(name string) { raised = name }
+	activateApp = rec.raise
 	t.Cleanup(func() { activateApp = restore })
 
 	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "spark-go", Sessions: []monitor.SessionItem{
@@ -112,10 +134,7 @@ func TestPiRowInHerdrFocusesThePane(t *testing.T) {
 	if err := tt.Click("Add pi sessions, Running"); err != nil {
 		t.Fatal(err)
 	}
-	waitForFocus(t, focused, "w4:pC")
-	if raised != "Herdr" {
-		t.Errorf("raised %q, want Herdr", raised)
-	}
+	rec.wait(t, "w4:pC", "Herdr")
 	if got := tt.OpenedURLs(); len(got) != 0 {
 		t.Errorf("a pi session has no deep link, opened %v", got)
 	}
@@ -125,9 +144,10 @@ func TestPiRowInHerdrFocusesThePane(t *testing.T) {
 func TestPiWaitingCardFocusesThePane(t *testing.T) {
 	home := shortHome(t)
 	t.Setenv("HOME", home)
-	focused := fakeHerdrSocket(t, home)
+	rec := &jumpRecorder{}
+	fakeHerdrSocket(t, home, rec)
 	restore := activateApp
-	activateApp = func(string) {}
+	activateApp = rec.raise
 	t.Cleanup(func() { activateApp = restore })
 
 	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "spark-go", Sessions: []monitor.SessionItem{
@@ -138,7 +158,7 @@ func TestPiWaitingCardFocusesThePane(t *testing.T) {
 	if err := tt.Click("Answer in pi"); err != nil {
 		t.Fatal(err)
 	}
-	waitForFocus(t, focused, "w4:pC")
+	rec.wait(t, "w4:pC", "Herdr")
 	if got := tt.OpenedURLs(); len(got) != 0 {
 		t.Errorf("a pi session has no deep link, opened %v", got)
 	}

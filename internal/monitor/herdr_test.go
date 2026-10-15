@@ -86,10 +86,10 @@ func TestHerdrAgentsKeepsPiOnly(t *testing.T) {
 		t.Fatalf("want only the pi agent, got %+v", agents)
 	}
 	got := agents[0]
-	if got.PaneID != "w1:p1" || got.Status != herdrWorking || !got.Focused {
+	if got.PaneID != "w1:p1" || got.Status != piWorking || !got.Focused {
 		t.Errorf("wrong fields: %+v", got)
 	}
-	if got.SessionPath != "/sessions/a.jsonl" || got.Cwd != "/tmp/spark-go" {
+	if got.SessionPath != "/sessions/a.jsonl" {
 		t.Errorf("wrong identity: %+v", got)
 	}
 }

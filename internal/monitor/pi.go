@@ -429,11 +429,15 @@ func (s *Scanner) herdrAgents(now time.Time) map[string]piLive {
 		return nil
 	}
 	out := make(map[string]piLive, len(agents))
+	// With nothing recorded yet there is no way to tell a session the user has read from one
+	// they haven't, so the first run takes what it finds as read and only reports what
+	// happens after it
+	first := s.piSeen.Fresh()
 	for _, a := range agents {
 		if a.SessionPath == "" {
 			continue
 		}
-		if a.Focused {
+		if a.Focused || first {
 			s.piSeen.Mark(a.SessionPath, now.UnixMilli())
 		}
 		out[a.SessionPath] = piLive{Status: a.Status, PaneID: a.PaneID}
