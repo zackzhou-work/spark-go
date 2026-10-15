@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"encoding/json"
@@ -22,6 +23,9 @@ const (
 	piTailBytes = 64 * 1024
 	// The built-in tool that puts a session in front of the user for an answer
 	piAskTool = "ask_user_question"
+	// Session entries are one JSON object per line; a tool output can make one enormous
+	piMaxLineBytes = 8 * 1024 * 1024
+	piSessionInfo  = `"session_info"`
 )
 
 // PiSession is what spark reads out of one pi session file
@@ -116,7 +120,6 @@ func ReadPiSession(path string) (PiSession, bool) {
 		tailLines = tailLines[1:]
 	}
 	results := piToolResults(tailLines)
-	tailName := ""
 	gotEvent := false
 	for i := len(tailLines) - 1; i >= 0; i-- {
 		r, ok := decodePiRecord(tailLines[i])
@@ -127,11 +130,6 @@ func ReadPiSession(path string) (PiSession, bool) {
 			out.ActivityAt = ts
 		}
 		switch r.Type {
-		case "session_info":
-			// A rename lands anywhere in the file; walking backwards finds the newest
-			if tailName == "" && r.Name != "" {
-				tailName = r.Name
-			}
 		case "message":
 			if !gotEvent && r.Message != nil {
 				if event, ok := piTurnEvent(r.Message, results); ok {
@@ -141,13 +139,36 @@ func ReadPiSession(path string) (PiSession, bool) {
 			}
 		}
 	}
-	if tailName != "" {
-		out.Title = tailName
+	if name := persistedPiName(f); name != "" {
+		out.Title = name
 	}
 	if out.ActivityAt == 0 {
 		out.ActivityAt = info.ModTime().UnixMilli()
 	}
 	return out, true
+}
+
+// persistedPiName finds the name the user gave the session. /name can be used at any point
+// and the newest entry wins wherever it sits, which the bounded head and tail windows can
+// miss once later output is long enough; looking for the key costs one pass over the file
+// and only the lines that mention it get decoded
+func persistedPiName(f *os.File) string {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return ""
+	}
+	name := ""
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), piMaxLineBytes)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if !bytes.Contains(line, []byte(piSessionInfo)) {
+			continue
+		}
+		if r, ok := decodePiRecord(line); ok && r.Type == "session_info" && r.Name != "" {
+			name = r.Name
+		}
+	}
+	return name
 }
 
 // piToolResults collects the tool calls that already came back, so a call still hanging at
@@ -430,9 +451,9 @@ func (s *Scanner) herdrAgents(now time.Time) map[string]piLive {
 	}
 	out := make(map[string]piLive, len(agents))
 	// With nothing recorded yet there is no way to tell a session the user has read from one
-	// they haven't, so the first run takes what it finds as read and only reports what
-	// happens after it
-	first := s.piSeen.Fresh()
+	// they haven't, so the first look takes what it finds as read and only what happens after
+	// it can be unread
+	first := s.piSeen.FirstLook()
 	for _, a := range agents {
 		if a.SessionPath == "" {
 			continue

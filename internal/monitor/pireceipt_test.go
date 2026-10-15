@@ -84,22 +84,29 @@ func TestPrunePiReceiptsDropsFinishedSessionsOnly(t *testing.T) {
 	}
 }
 
-func TestPiSeenKnowsAFreshStore(t *testing.T) {
-	if got := NewPiSeen(filepath.Join(t.TempDir(), "pi-seen.json")); !got.Fresh() {
-		t.Error("a store with no file behind it is fresh")
+// The baseline belongs to one scan: a store that stayed "first look" for the life of the
+// process would re-mark every session as seen on every scan, and nothing could ever be new
+func TestPiSeenBaselinesOnce(t *testing.T) {
+	fresh := NewPiSeen(filepath.Join(t.TempDir(), "pi-seen.json"))
+	if !fresh.FirstLook() {
+		t.Error("a store with no file behind it is a first look")
 	}
+	if fresh.FirstLook() {
+		t.Error("only the first look is the first look")
+	}
+
 	path := filepath.Join(t.TempDir(), "pi-seen.json")
 	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if got := NewPiSeen(path); got.Fresh() {
-		t.Error("a store that was written before is not fresh")
+	if got := NewPiSeen(path); got.FirstLook() {
+		t.Error("a store that was written before is not a first look")
 	}
 	if err := os.WriteFile(path, []byte("not json"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if got := NewPiSeen(path); !got.Fresh() {
-		t.Error("an unreadable store is treated as fresh rather than as authoritative")
+	if got := NewPiSeen(path); !got.FirstLook() {
+		t.Error("an unreadable store is treated as a first look rather than as authoritative")
 	}
 }
 

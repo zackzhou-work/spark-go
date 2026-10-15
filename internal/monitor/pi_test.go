@@ -95,6 +95,43 @@ func TestReadPiSessionPrefersARename(t *testing.T) {
 	}
 }
 
+// The name can be set at any point and later output pushes it out of the windows the head
+// and the tail are read in
+func TestReadPiSessionFindsARenameOutsideTheWindows(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	line := `{"type":"message","id":"x","timestamp":"2026-10-15T10:10:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"` +
+		strings.Repeat("output ", 140) + `"}],"stopReason":"stop"}}` + "\n"
+	path := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"2026-10-15T10:00:05.000Z","message":{"role":"user","content":"first words"}}`+"\n"+
+			`{"type":"session_info","id":"m2","timestamp":"2026-10-15T10:01:00.000Z","name":"Rewritten later"}`+"\n"+
+			strings.Repeat(line, 200))
+	if size := fileSize(t, path); size < piHeadBytes+piTailBytes {
+		t.Fatalf("the fixture is %d bytes, not long enough to push the name out of both windows", size)
+	}
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	if session.Title != "Rewritten later" {
+		t.Errorf("title = %q, want the name the user set", session.Title)
+	}
+	if session.LastEvent != Ended || session.ActivityAt == 0 {
+		t.Errorf("the tail still has to be read: %+v", session)
+	}
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	return info.Size()
+}
+
 func TestPiTurnEventFindsAPendingQuestion(t *testing.T) {
 	ask := &piMessage{
 		Role:       "assistant",
@@ -324,6 +361,34 @@ func TestScanPiReadsHerdrAndOnlyReportsWhatHappensAfterTheFirstRun(t *testing.T)
 		t.Fatalf("found %d sessions: %+v", len(found), found)
 	}
 	if found[0].item.State != Completed {
-		t.Errorf("state = %v, want Completed on the first run", found[0].item.State)
+		t.Errorf("state = %v, want Completed on the first look", found[0].item.State)
+	}
+
+	// A turn that finishes after the baseline is new. That only holds while the first look
+	// stays a one-off: a store that kept answering yes would mark every session seen on
+	// every scan, and nothing could ever be unread. The pause puts the new entry after the
+	// baseline's own millisecond, which is the whole distinction being tested
+	time.Sleep(5 * time.Millisecond)
+	appendPiLine(t, path, `{"type":"message","id":"m3","timestamp":"`+
+		time.Now().UTC().Format(time.RFC3339Nano)+
+		`","message":{"role":"assistant","content":[{"type":"text","text":"later"}],"stopReason":"stop"}}`)
+	found = fresh.scanPi(time.Now())
+	if len(found) != 1 {
+		t.Fatalf("found %d sessions: %+v", len(found), found)
+	}
+	if found[0].item.State != Unread {
+		t.Errorf("state = %v, want Unread for a turn that finished after the first look", found[0].item.State)
+	}
+}
+
+func appendPiLine(t *testing.T, path, line string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		t.Fatalf("append: %v", err)
 	}
 }

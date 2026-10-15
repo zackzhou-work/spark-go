@@ -7,7 +7,8 @@
  * The state comes from pi's own events, so a session spark can't otherwise see -- one
  * running in an IDE or a bare terminal -- still counts as working, blocked or idle. Two
  * things are reported: the state, including what a blocking dialog is asking for, and the
- * time of the user's last input, which is spark's read receipt.
+ * time of the user's last submitted prompt, which is how spark tells that they came back to
+ * the session.
  */
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -133,7 +134,8 @@ export default function (pi: any): void {
     flush();
   });
 
-  // The receipt spark reads: the user was here, whether or not they submitted anything
+  // pi reports input when a prompt is submitted, not on each keystroke, so this is the
+  // moment the user came back rather than a running record of them watching the output
   pi.on("input", (event: any) => {
     const source = event?.source;
     if (source !== "interactive" && source !== "rpc") return;

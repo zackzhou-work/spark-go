@@ -52,8 +52,16 @@ func NewPiSeen(path string) *PiSeen {
 	return seen
 }
 
-// Fresh reports whether nothing had been recorded yet
-func (s *PiSeen) Fresh() bool { return s != nil && s.fresh }
+// FirstLook reports whether nothing had been recorded yet, and remembers that it was asked:
+// the baseline it triggers belongs to the first look, and a later scan must be able to tell
+// a session that finished since from one that was already there
+func (s *PiSeen) FirstLook() bool {
+	if s == nil || !s.fresh {
+		return false
+	}
+	s.fresh = false
+	return true
+}
 
 func (s *PiSeen) Seen(key string) int64 {
 	if s == nil || key == "" {
