@@ -96,7 +96,7 @@ func TestAllShowsEveryProjectAndGroupsByDay(t *testing.T) {
 	a := demoApp()
 	a.filter = filterAll
 	tt := newViewTester(a, 360, 640)
-	for _, s := range []string{"Every agent.", "6 projects · 13 sessions", "Needs you", "All caught up", "Today", "Yesterday", "Earlier", "Migrate to the new auth client", "Port the release script to Go"} {
+	for _, s := range []string{"Every agent.", "8 projects · 18 sessions", "Needs you", "All caught up", "Today", "Yesterday", "Earlier", "Migrate to the new auth client", "Port the release script to Go"} {
 		if !tt.HasText(s) {
 			t.Errorf("All should show %q; it shows %q", s, tt.Texts())
 		}
@@ -111,11 +111,11 @@ func TestEmptyTodayOffersAllSessionsAndTheHook(t *testing.T) {
 	if !tt.HasText("Everyone’s resting.") || !tt.HasText("Hear about prompts right away") {
 		t.Fatalf("empty Today should rest and offer the hook; it shows %q", tt.Texts())
 	}
-	if err := tt.Click("Install"); err != nil {
+	if err := tt.Click("Install for Claude"); err != nil {
 		t.Fatal(err)
 	}
 	if got := tt.OpenedURLs(); len(got) != 1 || got[0] != hookGuideURL {
-		t.Fatalf("Install should open the hook guide, opened %v", got)
+		t.Fatalf("Install for Claude should open the hook guide, opened %v", got)
 	}
 	if err := tt.Click("Show all sessions"); err != nil {
 		t.Fatal(err)
@@ -127,10 +127,37 @@ func TestEmptyTodayOffersAllSessionsAndTheHook(t *testing.T) {
 
 	a.hookInstalled = true
 	a.codexHookInstalled = true
+	a.piHookInstalled = true
 	a.filter = filterToday
 	tt.Frame()
 	if tt.HasText("Hear about prompts right away") {
 		t.Fatal("no need to offer a hook that is installed")
+	}
+}
+
+// The pi extension installs itself, unlike Claude's, which only opens the guide
+func TestHookBannerInstallsThePiExtension(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "old", Sessions: []monitor.SessionItem{
+		{ID: "local_1", Title: "Last week's work", State: monitor.Completed, ActivityAt: time.Now().Add(-72 * time.Hour)},
+	}}}, hookInstalled: true, codexHookInstalled: true}
+	tt := newViewTester(a, 360, 640)
+	if !tt.HasText("Install for pi") {
+		t.Fatalf("the pi extension should be offered; it shows %q", tt.Texts())
+	}
+	if err := tt.Click("Install for pi"); err != nil {
+		t.Fatal(err)
+	}
+	if !a.piHookInstalled {
+		t.Error("the button should record the install")
+	}
+	if !monitor.PiExtensionInstalled(home) {
+		t.Error("the extension should be on disk")
+	}
+	tt.Frame()
+	if tt.HasText("Install for pi") {
+		t.Error("an installed extension is not offered again")
 	}
 }
 
@@ -153,8 +180,25 @@ func TestHookBannerCoversCodexSeparately(t *testing.T) {
 	}
 }
 
+// Its own fixture rather than the demo set, so the layout assertions stay about layout
 func TestNarrowWindowStacksTheCards(t *testing.T) {
-	a := demoApp()
+	now := time.Now()
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	a := &app{groups: []monitor.ProjectGroup{
+		{ProjectName: "acme-web", Sessions: []monitor.SessionItem{
+			{ID: "local_1", Title: "Add dark mode to the settings page", State: monitor.Running, ActivityAt: now, IsToday: true},
+			{ID: "local_2", Title: "Upgrade the router to v7", State: monitor.Unread, ActivityAt: ago(14 * time.Minute), IsToday: true},
+		}},
+		{ProjectName: "data-pipeline", Sessions: []monitor.SessionItem{
+			{ID: "local_4", Title: "Profile the nightly aggregation job", State: monitor.Unread, ActivityAt: ago(38 * time.Minute), IsToday: true},
+		}},
+		{ProjectName: "search-api", Sessions: []monitor.SessionItem{
+			{ID: "local_5", Title: "Pick an embedding model", State: monitor.Waiting, WaitReason: monitor.WaitQuestion, ActivityAt: ago(8 * time.Minute), IsToday: true},
+		}},
+		{ProjectName: "infra", Sessions: []monitor.SessionItem{
+			{ID: "local_6", Title: "Rotate the staging certificates", State: monitor.Waiting, WaitReason: monitor.WaitPermission, ActivityAt: ago(3 * time.Minute), IsToday: true},
+		}},
+	}}
 	tt := newViewTester(a, 280, 600)
 	for _, s := range []string{"Respond", "Answer", "data-pipeline", "Working", "1 to read", "Recent", "New"} {
 		if !tt.HasText(s) {
@@ -170,11 +214,11 @@ func TestNarrowWindowStacksTheCards(t *testing.T) {
 	if tt.HasText("14m") {
 		t.Error("narrow rows show New instead of the time")
 	}
-	if err := tt.Click("docs-site, 1 to read"); err != nil {
+	if err := tt.Click("data-pipeline, 1 to read"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if a.project != "docs-site" {
+	if a.project != "data-pipeline" {
 		t.Fatalf("a project row should open its project, got %q", a.project)
 	}
 }
@@ -245,6 +289,9 @@ func TestScreens(t *testing.T) {
 		{"today-dark", 360, 640, true, func(a *app) {}},
 		{"all", 360, 640, false, func(a *app) { a.filter = filterAll }},
 		{"project", 360, 640, false, func(a *app) { a.project = "search-api" }},
+		{"project-pi", 360, 640, false, func(a *app) { a.project = "rag" }},
+		{"project-pi-nowhere", 360, 640, false, func(a *app) { a.project = "togo" }},
+		{"project-pi-narrow", 300, 640, false, func(a *app) { a.project = "rag" }},
 		{"empty", 360, 640, false, func(a *app) { a.groups = nil }},
 		{"narrow", 280, 600, false, func(a *app) {}},
 		{"narrow-min", minWidth, 600, false, func(a *app) {}},

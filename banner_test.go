@@ -115,6 +115,17 @@ func demoApp() *app {
 			{ID: "01a12f69-fdb1-7173-b784-47189d9442d7", Source: monitor.SourceCodex, Title: "Port the release script to Go", State: monitor.Running, ActivityAt: now, IsToday: true},
 			{ID: "01a12f6a-004f-7b00-a3db-568255912b84", Source: monitor.SourceCodex, Title: "Ship the 0.4 roadmap", State: monitor.Unread, ActivityAt: ago(21 * time.Minute), IsToday: true},
 		}},
+		// A pi project: one session waiting on a question in Herdr, so the card can go there,
+		// and one started in a terminal spark can't open
+		{ProjectName: "rag", Sessions: []monitor.SessionItem{
+			{ID: "01a13ed4-da48-74ac-b607-dc2344b528b0", Source: monitor.SourcePi, Title: "Migrate the router to the new gateway", State: monitor.Waiting, WaitReason: monitor.WaitQuestion, Pane: "w4:pC", ActivityAt: ago(2 * time.Minute), IsToday: true},
+			{ID: "01a13f06-5941-7138-a5d7-056c36fd2894", Source: monitor.SourcePi, Title: "Rebuild the ingest pipeline", State: monitor.Running, Pane: "w4:pF", ActivityAt: now, IsToday: true},
+			{ID: "01a139f7-774a-705c-a47e-49deb8437f52", Source: monitor.SourcePi, Title: "Backfill events for September", State: monitor.Unread, ActivityAt: ago(38 * time.Minute), IsToday: true},
+			{ID: "01a13919-4037-72b8-8b7e-c47d3459020f", Source: monitor.SourcePi, Title: "Trace the slow ranking query", State: monitor.Completed, NoSignal: true, ActivityAt: ago(11 * time.Hour), IsToday: true},
+		}},
+		{ProjectName: "togo", Sessions: []monitor.SessionItem{
+			{ID: "01a13022-edf8-7755-9563-b28f921ada85", Source: monitor.SourcePi, Title: "Pick an embedding model", State: monitor.Waiting, WaitReason: monitor.WaitQuestion, ActivityAt: ago(4 * time.Minute), IsToday: true},
+		}},
 	}}
 }
 

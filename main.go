@@ -29,6 +29,7 @@ func main() {
 		groups:             scanner.ScanAll(),
 		hookInstalled:      monitor.HookInstalled(home),
 		codexHookInstalled: monitor.CodexHooksInstalled(home),
+		piHookInstalled:    monitor.PiExtensionInstalled(home),
 	}
 
 	mygo.App.WhenReady(func() {
@@ -76,7 +77,10 @@ func main() {
 			last = groups
 			hooked := monitor.HookInstalled(home)
 			codexHooked := monitor.CodexHooksInstalled(home)
-			win.Update(func() { a.groups, a.hookInstalled, a.codexHookInstalled = groups, hooked, codexHooked })
+			piHooked := monitor.PiExtensionInstalled(home)
+			win.Update(func() {
+				a.groups, a.hookInstalled, a.codexHookInstalled, a.piHookInstalled = groups, hooked, codexHooked, piHooked
+			})
 			return true
 		})
 	})

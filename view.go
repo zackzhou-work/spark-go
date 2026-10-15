@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -87,9 +88,10 @@ const (
 	// Two width layouts: below narrowWidth the cards stack. Height doesn't matter; a short
 	// window just scrolls
 	narrowWidth = 340
-	// With both hooks missing, this page width leaves enough room for the banner buttons and
-	// a readable prose column on the same row.
-	hookBannerInlineMinWidth = 440
+	// With three hooks missing, this page width leaves enough room for the banner's buttons
+	// and a readable prose column on the same row. Below it the buttons stack under the
+	// prose, which is also what keeps the empty state's card from being squeezed flat
+	hookBannerInlineMinWidth = 650
 	// minWidth is as narrow as the window goes; past it even the narrow cards stop fitting
 	minWidth = 260
 
@@ -132,6 +134,7 @@ type app struct {
 	// prompts for them individually
 	hookInstalled      bool
 	codexHookInstalled bool
+	piHookInstalled    bool
 	// cast is the character each project was given, handed out across all projects at once so
 	// that projects on screen clash as little as possible
 	cast map[string]character
@@ -588,13 +591,17 @@ func (a *app) waitingCard(c *ui.Context, p palette, s monitor.SessionItem, now t
 			}
 			ui.Text(c, meta).FontSize(12).LineHeight(1.5).TextColor(p.sec)
 			ui.Text(c, s.Title).FontSize(16).LineHeight(1.5).TextColor(p.strong)
+			if !s.Jumpable() {
+				// pi answers a question in its own terminal, and spark has no way to bring
+				// that window forward, so the card only explains itself and offers Later. The
+				// session still shows up here: you asked to be told
+				ui.Text(c, "Waiting in a terminal spark can’t reach").FontSize(12).LineHeight(1.5).TextColor(p.sec)
+			}
 		})
 		ui.Row(c).Gap(8).Wrap().Children(func() {
-			label := "Respond in Claude"
-			if s.WaitReason == monitor.WaitQuestion {
-				label = "Answer in Claude"
+			if s.Jumpable() {
+				pillButton(c, p, answerLabel(s), true, 36, 14).OnClick(func() { jumpToSession(c, s) })
 			}
-			pillButton(c, p, label, true, 36, 14).OnClick(func() { jumpToSession(c, s) })
 			pillButton(c, p, "Later", false, 36, 14).OnClick(func() {
 				if a.snoozed == nil {
 					a.snoozed = map[string]time.Time{}
@@ -603,6 +610,16 @@ func (a *app) waitingCard(c *ui.Context, p palette, s monitor.SessionItem, now t
 			})
 		})
 	})
+}
+
+// answerLabel names the agent the session is waiting in, since the button goes straight to
+// it: a question is answered, a permission prompt is responded to
+func answerLabel(s monitor.SessionItem) string {
+	verb := "Respond"
+	if s.WaitReason == monitor.WaitQuestion {
+		verb = "Answer"
+	}
+	return verb + " in " + s.Source.String()
 }
 
 func projectSummary(g monitor.ProjectGroup) string {
@@ -720,7 +737,7 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, st rowStyle, no
 			title.TextColor(p.sec)
 		}
 		if when != "" || hovered {
-			trailing(c, p, hovered, when, st.meta)
+			trailing(c, p, hovered, when, st.meta, s)
 		}
 		if s.State == monitor.Unread {
 			newPill(c, p, st.pill)
@@ -746,11 +763,17 @@ func hoverFill(row ui.Element, hovered bool, color ui.Color) {
 	}
 }
 
-// trailing shows how long ago by default, swapping to a jump arrow on hover
-func trailing(c *ui.Context, p palette, hovered bool, when string, size float32) {
+// trailing shows how long ago by default, swapping to a jump arrow on hover. A pi session
+// spark can't open keeps its time, unless nothing is reporting on it at all, which is worth
+// saying: the row can only tell that the turn is over
+func trailing(c *ui.Context, p palette, hovered bool, when string, size float32, s monitor.SessionItem) {
 	label := when
-	if hovered {
+	switch {
+	case !hovered:
+	case s.Jumpable():
 		label = "→"
+	case s.NoSignal:
+		label = "no live signal"
 	}
 	ui.Text(c, label).Shrink(0).FontSize(size).FontFeatures("tnum").TextColor(p.sec)
 }
@@ -881,9 +904,9 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 				}
 			})
 			ui.Column(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				title, body := "Everyone’s resting.", "Nothing ran today. Sessions you start in Claude’s Code tab show up here."
+				title, body := "Everyone’s resting.", "Nothing ran today. Sessions you start in your agents show up here."
 				if filter == filterAll {
-					title, body = "No sessions yet.", "Sessions you start in Claude’s Code tab show up here."
+					title, body = "No sessions yet.", "Sessions you start in your agents show up here."
 				}
 				ui.Text(c, title).FontSize(28).LineHeight(34.0 / 28).FontWeight(590).LetterSpacing(-0.75).TextAlign(ui.Center).TextColor(p.strong)
 				ui.Text(c, body).FontSize(16).LineHeight(1.5).TextAlign(ui.Center).TextColor(p.sec)
@@ -892,7 +915,7 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 				pillButton(c, p, "Show all sessions", true, 40, 14).OnClick(func() { a.filter = filterAll })
 			}
 		})
-		if !a.hookInstalled || !a.codexHookInstalled {
+		if !a.hookInstalled || !a.codexHookInstalled || !a.piHookInstalled {
 			a.hookBanner(c, p, l)
 		} else {
 			ui.Box(c).Height(12)
@@ -900,19 +923,23 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 	})
 }
 
-// hookBanner prompts for the hook: without it an approval prompt can only be guessed at.
-// Claude and Codex hooks install separately, so whichever is missing gets offered
+// hookBanner prompts for the reports spark can't get on its own: without them an approval
+// prompt, or whether a pi session is running at all, can only be guessed at. Claude, Codex
+// and pi install separately, so whichever is missing gets offered
 func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
-	// In a narrow window, or when two buttons leave too little room for the prose, stack the
-	// actions below it. The prose column holds MinWidth(0), so it gives way first: squeezed
-	// further, it wraps to a character a line and grows tall enough to push the card above it
-	// out of the window.
+	// In a narrow window, or when several buttons leave too little room for the prose, stack
+	// the actions below it. The prose column holds MinWidth(0), so it gives way first:
+	// squeezed further, it wraps to a character a line and grows tall enough to push the card
+	// above it out of the window.
 	width, _ := c.Size()
 	missing := 0
 	if !a.hookInstalled {
 		missing++
 	}
 	if !a.codexHookInstalled {
+		missing++
+	}
+	if !a.piHookInstalled {
 		missing++
 	}
 	stacked := l == layoutNarrow || (missing > 1 && width < hookBannerInlineMinWidth)
@@ -923,12 +950,12 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 		}
 		text.Children(func() {
 			ui.Text(c, "Hear about prompts right away").FontSize(14).LineHeight(20.0 / 14).FontWeight(510)
-			ui.Text(c, "Install the hook so spark doesn’t have to guess.").FontSize(12).LineHeight(1.5).TextColor(p.sec)
+			ui.Text(c, "Install the hook each agent needs, so spark doesn’t have to guess.").FontSize(12).LineHeight(1.5).TextColor(p.sec)
 		})
 	}
 	install := func() {
 		if !a.hookInstalled {
-			pillButton(c, p, "Install", false, 32, 14).OnClick(func() { openURL(c, hookGuideURL) })
+			pillButton(c, p, "Install for Claude", false, 32, 14).OnClick(func() { openURL(c, hookGuideURL) })
 		}
 		if !a.codexHookInstalled {
 			pillButton(c, p, "Install for Codex", false, 32, 14).OnClick(func() {
@@ -944,13 +971,23 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 				a.codexHookInstalled = true
 			})
 		}
+		if !a.piHookInstalled {
+			pillButton(c, p, "Install for pi", false, 32, 14).OnClick(func() {
+				home, _ := os.UserHomeDir()
+				if err := monitor.InstallPiExtension(home); err != nil {
+					log.Printf("[Hooks] installing the pi extension failed: %v", err)
+					return
+				}
+				a.piHookInstalled = true
+			})
+		}
 	}
 
 	ui.Column(c).Margin(12).Radius(16).Border(1, p.line).Padding(12, 12, 12, 16).Gap(10).Children(func() {
 		if stacked {
 			prose(false)
-			// the two buttons can still be wider than the banner between them, so let them
-			// wrap rather than push out past its edge
+			// The buttons can still be wider than the banner between them, so let them wrap
+			// rather than push out past its edge
 			ui.Row(c).Gap(8).Wrap().Children(install)
 			return
 		}
@@ -1074,8 +1111,13 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// jumpToSession jumps to a session: each side uses its own desktop deep link
+// jumpToSession takes the user back to a session: Claude and Codex have desktop deep links,
+// and a pi session is a pane in Herdr
 func jumpToSession(c *ui.Context, s monitor.SessionItem) {
+	if s.Source == monitor.SourcePi {
+		jumpToPi(s)
+		return
+	}
 	var (
 		url string
 		ok  bool
@@ -1090,6 +1132,36 @@ func jumpToSession(c *ui.Context, s monitor.SessionItem) {
 		return
 	}
 	openURL(c, url)
+}
+
+// jumpToPi focuses the pane a pi session runs in, which also marks it seen in Herdr. It
+// runs off the UI thread: a socket that stopped answering must not freeze the window
+func jumpToPi(s monitor.SessionItem) {
+	if s.Pane == "" {
+		log.Printf("[Jump] no Herdr pane for %s, skipping", s.ID)
+		return
+	}
+	go func() {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return
+		}
+		client := monitor.HerdrClient{SocketPath: monitor.HerdrSocketPath(home)}
+		if err := client.FocusPane(s.Pane); err != nil {
+			log.Printf("[Jump] focusing %s failed: %v", s.Pane, err)
+			return
+		}
+		// Herdr focuses the pane inside its own window; the window itself still has to come
+		// forward
+		activateApp("Herdr")
+	}()
+}
+
+// activateApp raises an app by name. Tests replace it so a click doesn't open windows
+var activateApp = func(name string) {
+	if err := exec.Command("/usr/bin/open", "-a", name).Run(); err != nil {
+		log.Printf("[Jump] raising %s failed: %v", name, err)
+	}
 }
 
 func openURL(c *ui.Context, url string) {
