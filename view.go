@@ -907,6 +907,7 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 	// actions below it. The prose column holds MinWidth(0), so it gives way first: squeezed
 	// further, it wraps to a character a line and grows tall enough to push the card above it
 	// out of the window.
+	width, _ := c.Size()
 	missing := 0
 	if !a.hookInstalled {
 		missing++
