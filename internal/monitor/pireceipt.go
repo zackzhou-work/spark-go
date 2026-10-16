@@ -108,16 +108,20 @@ func ReadPiReceipts(dir string) piReceipts {
 		if r.State == "" || nowMs-r.UpdatedAtMs > piReceiptLiveWindow.Milliseconds() {
 			continue
 		}
-		if !processAliveCached(alive, r.PID) {
-			continue
-		}
-		if starts == nil {
-			starts = processStarts()
-		}
-		if !sameProcess(starts, r) {
-			// The pid answers, but not the process that wrote this: a crashed pi whose pid was
-			// reused. Its state is worthless, though its last input still counts as a look
-			continue
+		// A session that ended says so, and its process being gone is the point rather than a
+		// reason to doubt it; the badge window still applies to it
+		if r.State != piExited {
+			if !processAliveCached(alive, r.PID) {
+				continue
+			}
+			if starts == nil {
+				starts = processStarts()
+			}
+			if !sameProcess(starts, r) {
+				// The pid answers, but not the process that wrote this: a crashed pi whose pid
+				// was reused. Its state is worthless, though its last input still counts as a look
+				continue
+			}
 		}
 		for _, k := range keys {
 			out.live[k] = piLive{Status: r.State, BlockKind: r.BlockKind, Tool: r.Tool}

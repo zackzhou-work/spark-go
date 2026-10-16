@@ -84,23 +84,53 @@ func TestPrunePiReceiptsDropsFinishedSessionsOnly(t *testing.T) {
 	}
 }
 
-func TestPiReportedNeedsAReceipt(t *testing.T) {
+// A receipt only proves the extension was loaded if it was written after the file landed: a
+// leftover from before the install is exactly what the README's refresh path leaves behind
+func TestPiReportedSinceNeedsAReceiptFromAfterTheInstall(t *testing.T) {
 	home := t.TempDir()
-	if PiReported(home) {
+	installed := time.Now()
+	if PiReportedSince(home, installed) {
 		t.Error("nothing has reported in a fresh home")
 	}
 	dir := PiReceiptDir(home)
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if PiReported(home) {
+	if PiReportedSince(home, installed) {
 		t.Error("an empty directory is not a report")
 	}
-	if err := os.WriteFile(filepath.Join(dir, "abc.json"), []byte("{}"), 0o644); err != nil {
+	old := filepath.Join(dir, "old.json")
+	if err := os.WriteFile(old, []byte("{}"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if !PiReported(home) {
-		t.Error("a receipt is a report")
+	if err := os.Chtimes(old, installed.Add(-time.Hour), installed.Add(-time.Hour)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if PiReportedSince(home, installed) {
+		t.Error("a receipt from before the install says nothing about it")
+	}
+	fresh := filepath.Join(dir, "fresh.json")
+	if err := os.WriteFile(fresh, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chtimes(fresh, installed.Add(time.Second), installed.Add(time.Second)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if !PiReportedSince(home, installed) {
+		t.Error("a receipt written after the install is a report")
+	}
+}
+
+// A session that ended says so, and its process being gone is the point: the badge window
+// still applies to the turn it finished
+func TestReadPiReceiptsKeepsAnExitedReceiptWithoutItsProcess(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UnixMilli()
+	writeReceipt(t, dir, "exited.json", receiptJSON("exited", "/sessions/exited.jsonl", 999999, piExited, now, now))
+
+	got := ReadPiReceipts(dir)
+	if _, ok := got.live["/sessions/exited.jsonl"]; !ok {
+		t.Error("an exited session is still a session spark knows about")
 	}
 }
 

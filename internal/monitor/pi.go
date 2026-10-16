@@ -39,10 +39,6 @@ type PiSession struct {
 	Path  string
 	Cwd   string
 	Title string
-	// LastEvent is the turn progress at the end of the file. It only decides what a
-	// blocked session is blocked on: whether a turn is live comes from Herdr or the
-	// extension, never from a guess
-	LastEvent TurnEvent
 	// ActivityAt is when anything last happened in the file, metadata included, which is
 	// what the row's time and the day it belongs to go by
 	ActivityAt int64
@@ -152,8 +148,6 @@ func readPiSession(path string, prev piRead) (piRead, bool) {
 		// The first line is incomplete when the tail starts mid-file
 		tailLines = tailLines[1:]
 	}
-	results := piToolResults(tailLines)
-	gotEvent := false
 	for i := len(tailLines) - 1; i >= 0; i-- {
 		r, ok := decodePiRecord(tailLines[i])
 		if !ok {
@@ -162,18 +156,11 @@ func readPiSession(path string, prev piRead) (piRead, bool) {
 		if ts := piEntryTime(tailLines[i]); ts > out.ActivityAt {
 			out.ActivityAt = ts
 		}
-		switch r.Type {
-		case "message":
-			// Unread timing goes by the conversation, not by whatever was written last: a
-			// rename, a model switch or an extension's own state say nothing about a result
+		// Unread timing goes by the conversation, not by whatever was written last: a rename,
+		// a model switch or an extension's own state say nothing about a result
+		if r.Type == "message" {
 			if ts := piEntryTime(tailLines[i]); ts > out.TurnAt {
 				out.TurnAt = ts
-			}
-			if !gotEvent && r.Message != nil {
-				if event, ok := piTurnEvent(r.Message, results); ok {
-					out.LastEvent = event
-					gotEvent = true
-				}
 			}
 		}
 	}
@@ -336,48 +323,6 @@ func piLastRecordStart(f *os.File, offset int64) int64 {
 		end = start
 	}
 	return limit
-}
-
-// piToolResults collects the tool calls that already came back, so a call still hanging at
-// the end of the tail counts as pending
-func piToolResults(lines [][]byte) map[string]bool {
-	results := map[string]bool{}
-	for _, line := range lines {
-		r, ok := decodePiRecord(line)
-		if !ok || r.Message == nil || r.Message.Role != "toolResult" {
-			continue
-		}
-		for _, b := range piBlocks(r.Message.Content) {
-			if b.ToolCallID != "" {
-				results[b.ToolCallID] = true
-			}
-		}
-	}
-	return results
-}
-
-// piTurnEvent classifies the newest message in a tail
-func piTurnEvent(m *piMessage, results map[string]bool) (TurnEvent, bool) {
-	switch m.Role {
-	case "user", "toolResult":
-		return Generating, true
-	case "assistant":
-		for _, b := range piBlocks(m.Content) {
-			if b.Type != "toolCall" || results[b.ID] {
-				continue
-			}
-			if b.Name == piAskTool {
-				return AwaitingUser, true
-			}
-			return ToolPending, true
-		}
-		if m.StopReason == "toolUse" {
-			// The call's result fell outside the tail window; either way the turn goes on
-			return ToolPending, true
-		}
-		return Ended, true
-	}
-	return 0, false
 }
 
 func piBlocks(raw json.RawMessage) []piBlock {
@@ -605,7 +550,7 @@ func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs, nowMs i
 	case piWorking:
 		return Running, WaitPermission
 	case piBlocked:
-		return Waiting, piWaitReason(session, live)
+		return Waiting, piWaitReason(live)
 	case herdrDone:
 		// Herdr only says this for a turn that finished while its tab was unseen
 		return Unread, WaitPermission
@@ -625,19 +570,15 @@ func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs, nowMs i
 	return Completed, WaitPermission
 }
 
-// piWaitReason tells an answer from an approval. The extension reports which dialog is up;
-// Herdr only says "blocked", so there the session file decides
-func piWaitReason(session PiSession, live piLive) WaitReason {
+// piWaitReason tells an answer from an approval. The extension reports which dialog is up when
+// it is loaded; without it, a pi pane Herdr calls blocked is a question, because that is the
+// blocking case Herdr's own pi reporting covers. Nothing else in a session file can say
+// otherwise, which is why the file is no longer read for this
+func piWaitReason(live piLive) WaitReason {
 	if live.Tool == piAskTool {
 		return WaitQuestion
 	}
-	switch live.BlockKind {
-	case "confirm":
-		return WaitPermission
-	case "":
-		if session.LastEvent == AwaitingUser {
-			return WaitQuestion
-		}
+	if live.BlockKind == "confirm" {
 		return WaitPermission
 	}
 	return WaitQuestion
