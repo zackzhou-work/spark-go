@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,36 +187,34 @@ func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
 		t.Error("nothing left to install")
 	}
 
-	// A receipt left over from before the install proves nothing: it is the reinstall path the
-	// README describes, and the running session still has the old extension
-	stale := writeReceiptForTest(t, home, "stale.json", installedAt.Add(-time.Hour))
+	// A receipt from a session still running an older extension says nothing about the new
+	// one, however recently it was rewritten
+	writeReceiptForTest(t, home, "old.json", 0)
 	tt.Frame()
 	if !tt.HasText("One more step for pi") {
-		t.Errorf("a receipt from before the install should not count; it shows %q", tt.Texts())
+		t.Errorf("an older payload should not count; it shows %q", tt.Texts())
 	}
 
-	// One written after it means some pi process loaded the new file
-	writeReceiptForTest(t, home, "fresh.json", installedAt.Add(time.Second))
-	_ = stale
+	// One from the payload this build installs means a pi process loaded it
+	writeReceiptForTest(t, home, "fresh.json", 1)
 	tt.Frame()
 	if tt.HasText("One more step for pi") {
 		t.Errorf("the card should go once a session reports; it shows %q", tt.Texts())
 	}
+	_ = installedAt
 }
 
-// writeReceiptForTest puts a receipt in the pi directory with a chosen time
-func writeReceiptForTest(t *testing.T, home, name string, at time.Time) string {
+// writeReceiptForTest puts a receipt with a chosen payload version in the pi directory
+func writeReceiptForTest(t *testing.T, home, name string, payload int) string {
 	t.Helper()
 	dir := monitor.PiReceiptDir(home)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+	body := fmt.Sprintf(`{"payload":%d,"sessionId":"x","pid":%d}`, payload, os.Getpid())
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
-	}
-	if err := os.Chtimes(path, at, at); err != nil {
-		t.Fatalf("chtimes: %v", err)
 	}
 	return path
 }
@@ -260,7 +259,7 @@ func TestTodayNoticePointsAtThePiReload(t *testing.T) {
 	}
 
 	// And a session reporting afterwards takes it away for good
-	writeReceiptForTest(t, home, "fresh.json", installedAt.Add(2*time.Hour))
+	writeReceiptForTest(t, home, "fresh.json", 1)
 	tt.Frame()
 	if tt.HasText("need /reload or a restart") {
 		t.Errorf("a session loaded it, so there is nothing left to say; it shows %q", tt.Texts())

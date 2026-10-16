@@ -84,40 +84,38 @@ func TestPrunePiReceiptsDropsFinishedSessionsOnly(t *testing.T) {
 	}
 }
 
-// A receipt only proves the extension was loaded if it was written after the file landed: a
-// leftover from before the install is exactly what the README's refresh path leaves behind
-func TestPiReportedSinceNeedsAReceiptFromAfterTheInstall(t *testing.T) {
+// A receipt is only proof that the extension was loaded if it came from the version this
+// build installs: a session still running an older copy keeps writing its own, on every state
+// change and on every heartbeat
+func TestPiReportedNeedsACurrentReceipt(t *testing.T) {
 	home := t.TempDir()
-	installed := time.Now()
-	if PiReportedSince(home, installed) {
+	if PiReported(home) {
 		t.Error("nothing has reported in a fresh home")
 	}
 	dir := PiReceiptDir(home)
 	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if PiReportedSince(home, installed) {
+	if PiReported(home) {
 		t.Error("an empty directory is not a report")
 	}
-	old := filepath.Join(dir, "old.json")
-	if err := os.WriteFile(old, []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "old.json"), []byte(`{"payload":0}`), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if err := os.Chtimes(old, installed.Add(-time.Hour), installed.Add(-time.Hour)); err != nil {
-		t.Fatalf("chtimes: %v", err)
+	if PiReported(home) {
+		t.Error("a receipt from an older extension says nothing about this one")
 	}
-	if PiReportedSince(home, installed) {
-		t.Error("a receipt from before the install says nothing about it")
-	}
-	fresh := filepath.Join(dir, "fresh.json")
-	if err := os.WriteFile(fresh, []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte("not json"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if err := os.Chtimes(fresh, installed.Add(time.Second), installed.Add(time.Second)); err != nil {
-		t.Fatalf("chtimes: %v", err)
+	if PiReported(home) {
+		t.Error("an unreadable receipt is not a report")
 	}
-	if !PiReportedSince(home, installed) {
-		t.Error("a receipt written after the install is a report")
+	if err := os.WriteFile(filepath.Join(dir, "fresh.json"), []byte(`{"payload":1}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !PiReported(home) {
+		t.Error("a receipt from the current payload is a report")
 	}
 }
 

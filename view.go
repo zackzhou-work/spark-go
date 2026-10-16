@@ -954,7 +954,7 @@ func (a *app) piInstallWaiting() (time.Time, bool) {
 		return time.Time{}, false
 	}
 	installedAt := monitor.PiInstalledAt(home)
-	if installedAt.IsZero() || monitor.PiReportedSince(home, installedAt) {
+	if installedAt.IsZero() || monitor.PiReported(home) {
 		return installedAt, false
 	}
 	return installedAt, true

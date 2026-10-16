@@ -153,9 +153,10 @@ func TestPiSessionStateNeedsALiveSignal(t *testing.T) {
 		{name: "working", session: ended, live: piLive{Status: piWorking}, ok: true, now: now, want: Running},
 		{name: "blocked on a question", session: ended, live: piLive{Status: piBlocked, Tool: piAskTool}, ok: true, now: now, want: Waiting, reason: WaitQuestion},
 		{name: "blocked on a confirm dialog", session: ended, live: piLive{Status: piBlocked, BlockKind: "confirm"}, ok: true, now: now, want: Waiting, reason: WaitPermission},
-		// Nothing said which dialog it is, and Herdr's own pi reporting only blocks on the
-		// question tool, so that is what it is taken to be
-		{name: "blocked with nothing said", session: ended, live: piLive{Status: piBlocked}, ok: true, now: now, want: Waiting, reason: WaitQuestion},
+		// Nothing said which dialog it is and the file shows no hanging question, so it is an
+		// approval: Herdr's blocked covers both, and only a question leaves a trace
+		{name: "blocked with nothing said", session: ended, live: piLive{Status: piBlocked}, ok: true, now: now, want: Waiting, reason: WaitPermission},
+		{name: "blocked on a hanging question", session: PiSession{LastEvent: AwaitingUser, ActivityAt: now, TurnAt: now}, live: piLive{Status: piBlocked}, ok: true, now: now, want: Waiting, reason: WaitQuestion},
 		{name: "blocked on a select dialog", session: ended, live: piLive{Status: piBlocked, BlockKind: "select"}, ok: true, now: now, want: Waiting, reason: WaitQuestion},
 		{name: "idle and unseen", session: ended, live: piLive{Status: piIdle}, ok: true, now: now, want: Unread},
 		{name: "idle since before the user looked", session: endedEarlier, live: piLive{Status: piIdle}, ok: true, lastSeen: now - 60_000, now: now, want: Completed},
@@ -185,20 +186,54 @@ func TestPiSessionStateNeedsALiveSignal(t *testing.T) {
 
 func TestPiWaitReasonGoesByWhatIsKnown(t *testing.T) {
 	cases := []struct {
-		live piLive
-		want WaitReason
+		name    string
+		session PiSession
+		live    piLive
+		want    WaitReason
 	}{
-		{piLive{Status: piBlocked, Tool: piAskTool}, WaitQuestion},
-		{piLive{Status: piBlocked, BlockKind: "confirm"}, WaitPermission},
-		{piLive{Status: piBlocked, BlockKind: "select"}, WaitQuestion},
-		// Herdr's blocked for a pi pane is the question tool; a permission dialog arrives as a
-		// confirm from the extension, so silence here means a question
-		{piLive{Status: piBlocked}, WaitQuestion},
+		{"the extension names the tool", PiSession{}, piLive{Status: piBlocked, Tool: piAskTool}, WaitQuestion},
+		{"the extension names the dialog", PiSession{}, piLive{Status: piBlocked, BlockKind: "confirm"}, WaitPermission},
+		{"the extension names a select", PiSession{}, piLive{Status: piBlocked, BlockKind: "select"}, WaitQuestion},
+		// Herdr only says "blocked", which its own documentation says covers approvals and
+		// questions alike, so the session file decides
+		{"a question is left hanging", PiSession{LastEvent: AwaitingUser}, piLive{Status: piBlocked}, WaitQuestion},
+		{"something else is left hanging", PiSession{LastEvent: ToolPending}, piLive{Status: piBlocked}, WaitPermission},
+		{"nothing is left hanging", PiSession{LastEvent: Ended}, piLive{Status: piBlocked}, WaitPermission},
 	}
 	for _, c := range cases {
-		if got := piWaitReason(c.live); got != c.want {
-			t.Errorf("piWaitReason(%+v) = %v, want %v", c.live, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			if got := piWaitReason(c.session, c.live); got != c.want {
+				t.Errorf("piWaitReason = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// A record too large for the tail window is the last thing in the file, so a question in it
+// has no answer yet: its head is enough to tell, because the tool is named before its
+// arguments
+func TestPiTurnEventComesOutOfAnOversizedQuestionRecord(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	base := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	huge := strings.Repeat("context ", 12_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+base.Format(time.RFC3339Nano)+`","message":{"role":"user","content":"ask me"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+base.Add(time.Second).Format(time.RFC3339Nano)+`","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"ask_user_question","arguments":{"note":"`+huge+`"}}]}}`+"\n")
+	if size := fileSize(t, path); size < piTailBytes {
+		t.Fatalf("the fixture is %d bytes, not big enough to fill the tail window", size)
+	}
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	if session.LastEvent != AwaitingUser {
+		t.Errorf("last event = %v, want the hanging question", session.LastEvent)
+	}
+	if got := piWaitReason(session, piLive{Status: piBlocked}); got != WaitQuestion {
+		t.Errorf("wait reason = %v, want a question", got)
 	}
 }
 

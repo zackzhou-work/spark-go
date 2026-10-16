@@ -22,6 +22,9 @@ const FLUSH_MS = 700;
 // variable exists so the test can watch a beat without waiting five minutes
 const HEARTBEAT_MS = Number(process.env.SPARK_PI_HEARTBEAT_MS) || 5 * 60 * 1000;
 const ASK_TOOL = "ask_user_question";
+// Bump this whenever what is reported below changes. Spark reads it to tell a session that
+// loaded this file from one still running an older copy, whose receipts keep arriving
+const PAYLOAD = 1;
 
 type Block = { key: string; kind: string; tool: string };
 
@@ -58,6 +61,7 @@ export default function (pi: any): void {
     // this is the heartbeat saying the process is still here
     if (!force && key === lastKey) return;
     const body = JSON.stringify({
+      payload: PAYLOAD,
       sessionId,
       sessionPath,
       pid: process.pid,

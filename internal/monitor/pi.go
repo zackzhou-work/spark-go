@@ -39,6 +39,10 @@ type PiSession struct {
 	Path  string
 	Cwd   string
 	Title string
+	// LastEvent is the turn progress at the end of the file. It only decides what a blocked
+	// session is blocked on, which is why it is read from the file: whether a turn is live at
+	// all comes from Herdr or the extension, never from a guess
+	LastEvent TurnEvent
 	// ActivityAt is when anything last happened in the file, metadata included, which is
 	// what the row's time and the day it belongs to go by
 	ActivityAt int64
@@ -116,6 +120,9 @@ func readPiSession(path string, prev piRead) (piRead, bool) {
 	// Activity comes from the newest entry the tail shows, falling back to the file's own
 	// time only when nothing in it parses
 	out := PiSession{Path: path}
+	// gotEvent says the newest message has been classified, which the salvaged record below
+	// may already have done
+	gotEvent := false
 	head := prev.head
 	if head.id == "" {
 		head, err = piHeadOf(f, info.Size())
@@ -143,11 +150,17 @@ func readPiSession(path string, prev piRead) (piRead, bool) {
 				if ts := piRecordTime(head.Timestamp); ts > out.TurnAt {
 					out.TurnAt = ts
 				}
+				// The record is the last one, so a question in it has no answer yet, and its
+				// head is all spark can read of a record too large for the window
+				if head.Asks {
+					out.LastEvent, gotEvent = AwaitingUser, true
+				}
 			}
 		}
 		// The first line is incomplete when the tail starts mid-file
 		tailLines = tailLines[1:]
 	}
+	results := piToolResults(tailLines)
 	for i := len(tailLines) - 1; i >= 0; i-- {
 		r, ok := decodePiRecord(tailLines[i])
 		if !ok {
@@ -156,11 +169,18 @@ func readPiSession(path string, prev piRead) (piRead, bool) {
 		if ts := piEntryTime(tailLines[i]); ts > out.ActivityAt {
 			out.ActivityAt = ts
 		}
+		if r.Type != "message" {
+			continue
+		}
 		// Unread timing goes by the conversation, not by whatever was written last: a rename,
 		// a model switch or an extension's own state say nothing about a result
-		if r.Type == "message" {
-			if ts := piEntryTime(tailLines[i]); ts > out.TurnAt {
-				out.TurnAt = ts
+		if ts := piEntryTime(tailLines[i]); ts > out.TurnAt {
+			out.TurnAt = ts
+		}
+		if !gotEvent && r.Message != nil {
+			if event, ok := piTurnEvent(r.Message, results); ok {
+				out.LastEvent = event
+				gotEvent = true
 			}
 		}
 	}
@@ -249,12 +269,13 @@ func piNameAt(f *os.File, from, size int64, fallback string) (string, int64) {
 	return name, scanned
 }
 
-// piRecordHead is the start of a record: enough to tell when it happened and whether it was
-// part of the conversation
+// piRecordHead is the start of a record: enough to tell when it happened, whether it was part
+// of the conversation, and whether it is the question tool left hanging
 type piRecordHead struct {
 	Type      string
 	Timestamp string
 	Role      string
+	Asks      bool
 }
 
 // piLastRecordHead reads the fields at the start of the record that contains offset. Only a
@@ -267,6 +288,8 @@ func piLastRecordHead(f *os.File, offset int64) (piRecordHead, bool) {
 	}
 
 	var out piRecordHead
+	// The tool's name comes before its arguments, so a record too large to read still says it
+	out.Asks = bytes.Contains(head, []byte(piAskTool))
 	dec := json.NewDecoder(bytes.NewReader(head))
 	depth, expecting := 0, ""
 	for {
@@ -323,6 +346,48 @@ func piLastRecordStart(f *os.File, offset int64) int64 {
 		end = start
 	}
 	return limit
+}
+
+// piToolResults collects the tool calls that already came back, so a call still hanging at
+// the end of the tail counts as pending
+func piToolResults(lines [][]byte) map[string]bool {
+	results := map[string]bool{}
+	for _, line := range lines {
+		r, ok := decodePiRecord(line)
+		if !ok || r.Message == nil || r.Message.Role != "toolResult" {
+			continue
+		}
+		for _, b := range piBlocks(r.Message.Content) {
+			if b.ToolCallID != "" {
+				results[b.ToolCallID] = true
+			}
+		}
+	}
+	return results
+}
+
+// piTurnEvent classifies the newest message in a tail
+func piTurnEvent(m *piMessage, results map[string]bool) (TurnEvent, bool) {
+	switch m.Role {
+	case "user", "toolResult":
+		return Generating, true
+	case "assistant":
+		for _, b := range piBlocks(m.Content) {
+			if b.Type != "toolCall" || results[b.ID] {
+				continue
+			}
+			if b.Name == piAskTool {
+				return AwaitingUser, true
+			}
+			return ToolPending, true
+		}
+		if m.StopReason == "toolUse" {
+			// The call's result fell outside the tail window; either way the turn goes on
+			return ToolPending, true
+		}
+		return Ended, true
+	}
+	return 0, false
 }
 
 func piBlocks(raw json.RawMessage) []piBlock {
@@ -550,7 +615,7 @@ func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs, nowMs i
 	case piWorking:
 		return Running, WaitPermission
 	case piBlocked:
-		return Waiting, piWaitReason(live)
+		return Waiting, piWaitReason(session, live)
 	case herdrDone:
 		// Herdr only says this for a turn that finished while its tab was unseen
 		return Unread, WaitPermission
@@ -571,17 +636,21 @@ func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs, nowMs i
 }
 
 // piWaitReason tells an answer from an approval. The extension reports which dialog is up when
-// it is loaded; without it, a pi pane Herdr calls blocked is a question, because that is the
-// blocking case Herdr's own pi reporting covers. Nothing else in a session file can say
-// otherwise, which is why the file is no longer read for this
-func piWaitReason(live piLive) WaitReason {
-	if live.Tool == piAskTool {
+// it is loaded. Without it, Herdr only says "blocked", and it means either an approval or a
+// question, so the session file decides: a question tool is left hanging in the last record
+// when that is what is waiting
+func piWaitReason(session PiSession, live piLive) WaitReason {
+	if live.Tool == piAskTool || live.BlockKind == "select" || live.BlockKind == "input" ||
+		live.BlockKind == "editor" || live.BlockKind == "custom" {
 		return WaitQuestion
 	}
 	if live.BlockKind == "confirm" {
 		return WaitPermission
 	}
-	return WaitQuestion
+	if session.LastEvent == AwaitingUser {
+		return WaitQuestion
+	}
+	return WaitPermission
 }
 
 // herdrAgents maps the pi sessions Herdr hosts to their pane and state, and marks the one

@@ -2,6 +2,7 @@ package monitor
 
 import (
 	_ "embed"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"time"
@@ -43,10 +44,11 @@ func PiInstalledAt(home string) time.Time {
 	return info.ModTime()
 }
 
-// PiReportedSince reports whether a pi process has written a receipt since then. pi loads
-// extensions when it starts, so a file on disk is not enough: this is what says a running
-// session has picked the extension up. A receipt from before the install says nothing about it
-func PiReportedSince(home string, since time.Time) bool {
+// PiReported reports whether a pi process is running this version of the extension. pi loads
+// extensions when it starts, so the file on disk is not enough: a session still running an
+// older copy keeps rewriting its own receipt, which is why the receipt's payload version is
+// what counts rather than when anything was written
+func PiReported(home string) bool {
 	entries, err := os.ReadDir(PiReceiptDir(home))
 	if err != nil {
 		return false
@@ -55,11 +57,15 @@ func PiReportedSince(home string, since time.Time) bool {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
-		info, err := e.Info()
+		content, err := os.ReadFile(filepath.Join(PiReceiptDir(home), e.Name()))
 		if err != nil {
 			continue
 		}
-		if info.ModTime().After(since) {
+		var r PiReceipt
+		if json.Unmarshal(content, &r) != nil {
+			continue
+		}
+		if r.Payload >= piReceiptPayload {
 			return true
 		}
 	}
