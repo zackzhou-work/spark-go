@@ -23,6 +23,9 @@ const (
 	piTailBytes = 64 * 1024
 	// The built-in tool that puts a session in front of the user for an answer
 	piAskTool = "ask_user_question"
+	// A New badge on a session nothing can report the user's attention for fades after this
+	// long, rather than hanging over one they have walked away from
+	piUnreadWindow = 30 * time.Minute
 	// Session entries are one JSON object per line; a tool output can make one enormous
 	piMaxLineBytes = 8 * 1024 * 1024
 	piSessionInfo  = `"session_info"`
@@ -371,8 +374,13 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 			if !ok {
 				live, ok = herdr[path]
 			}
+			// Which pane a session lives in decides whether the user can be seen looking at
+			// it, whoever reported its state
+			if live.PaneID == "" {
+				live.PaneID = herdr[path].PaneID
+			}
 			lastSeen := max(signals.seen[path], s.piSeen.Seen(path))
-			state, reason := piSessionState(session, live, ok, lastSeen)
+			state, reason := piSessionState(session, live, ok, lastSeen, now.UnixMilli())
 
 			activityAt := timestampTime(session.ActivityAt)
 			item := SessionItem{
@@ -398,7 +406,7 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 // piSessionState resolves a session from its live signal. Without one -- a session pi ran
 // in a terminal spark can't see, with no extension to report it -- the state stays
 // Completed rather than guessing: an unknown session must not look like it needs you
-func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs int64) (TaskState, WaitReason) {
+func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs, nowMs int64) (TaskState, WaitReason) {
 	if !ok {
 		return Completed, WaitPermission
 	}
@@ -410,10 +418,21 @@ func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs int64) (
 	}
 	// idle, done or exited: the turn is over, so the question is whether the user has
 	// looked since it finished
-	if session.ActivityAt > lastSeenMs {
+	if session.ActivityAt > lastSeenMs && piUnreadHolds(session, live, nowMs) {
 		return Unread, WaitPermission
 	}
 	return Completed, WaitPermission
+}
+
+// piUnreadHolds decides whether an unseen turn is still worth a New badge. A session in a
+// Herdr pane can have it cleared at any time, because focusing that pane is reported; a
+// session in an IDE or a plain terminal has only submitted prompts to go on, and those come
+// before the turn ran, so the badge fades instead of waiting for the user to come back
+func piUnreadHolds(session PiSession, live piLive, nowMs int64) bool {
+	if live.PaneID != "" {
+		return true
+	}
+	return nowMs-session.ActivityAt < piUnreadWindow.Milliseconds()
 }
 
 // piWaitReason tells an answer from an approval. The extension reports which dialog is up;

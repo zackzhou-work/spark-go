@@ -162,9 +162,12 @@ func TestPiTurnEventFindsAPendingQuestion(t *testing.T) {
 
 func TestPiSessionStateNeedsALiveSignal(t *testing.T) {
 	now := time.Now().UnixMilli()
-	// A turn that just finished, and one that finished two minutes ago
+	// A turn that just finished, one that finished two minutes ago, and ones either side of
+	// the window a badge on an unreportable session gets
 	ended := PiSession{ActivityAt: now, LastEvent: Ended}
 	endedEarlier := PiSession{ActivityAt: now - 120_000, LastEvent: Ended}
+	endedSoon := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds()/2, LastEvent: Ended}
+	endedEarly := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds() - 60_000, LastEvent: Ended}
 
 	cases := []struct {
 		name     string
@@ -172,22 +175,29 @@ func TestPiSessionStateNeedsALiveSignal(t *testing.T) {
 		live     piLive
 		ok       bool
 		lastSeen int64
+		now      int64
 		want     TaskState
 		reason   WaitReason
 	}{
-		{name: "no signal", session: ended, ok: false, want: Completed},
-		{name: "working", session: ended, live: piLive{Status: piWorking}, ok: true, want: Running},
-		{name: "blocked on a question", session: ended, live: piLive{Status: piBlocked, Tool: piAskTool}, ok: true, want: Waiting, reason: WaitQuestion},
-		{name: "blocked on a confirm dialog", session: ended, live: piLive{Status: piBlocked, BlockKind: "confirm"}, ok: true, want: Waiting, reason: WaitPermission},
-		{name: "blocked on a select dialog", session: ended, live: piLive{Status: piBlocked, BlockKind: "select"}, ok: true, want: Waiting, reason: WaitQuestion},
-		{name: "idle and unseen", session: ended, live: piLive{Status: piIdle}, ok: true, want: Unread},
-		{name: "idle since before the user looked", session: endedEarlier, live: piLive{Status: piIdle}, ok: true, lastSeen: now - 60_000, want: Completed},
-		{name: "idle and watched", session: ended, live: piLive{Status: piIdle}, ok: true, lastSeen: now, want: Completed},
-		{name: "exited and unseen", session: ended, live: piLive{Status: piExited}, ok: true, want: Unread},
+		{name: "no signal", session: ended, ok: false, now: now, want: Completed},
+		{name: "working", session: ended, live: piLive{Status: piWorking}, ok: true, now: now, want: Running},
+		{name: "blocked on a question", session: ended, live: piLive{Status: piBlocked, Tool: piAskTool}, ok: true, now: now, want: Waiting, reason: WaitQuestion},
+		{name: "blocked on a confirm dialog", session: ended, live: piLive{Status: piBlocked, BlockKind: "confirm"}, ok: true, now: now, want: Waiting, reason: WaitPermission},
+		{name: "blocked on a select dialog", session: ended, live: piLive{Status: piBlocked, BlockKind: "select"}, ok: true, now: now, want: Waiting, reason: WaitQuestion},
+		{name: "idle and unseen", session: ended, live: piLive{Status: piIdle}, ok: true, now: now, want: Unread},
+		{name: "idle since before the user looked", session: endedEarlier, live: piLive{Status: piIdle}, ok: true, lastSeen: now - 60_000, now: now, want: Completed},
+		{name: "idle and watched", session: ended, live: piLive{Status: piIdle}, ok: true, lastSeen: now, now: now, want: Completed},
+		{name: "exited and unseen", session: ended, live: piLive{Status: piExited}, ok: true, now: now, want: Unread},
+		// A Herdr pane can be focused at any time, so its badge waits for that
+		{name: "unseen in a pane, long after", session: endedEarly, live: piLive{Status: piIdle, PaneID: "w4:pC"}, ok: true, now: now, want: Unread},
+		// Nothing can report the user looking at a session in an IDE or a plain terminal, so
+		// its badge fades instead of hanging on
+		{name: "unseen and faded", session: endedEarly, live: piLive{Status: piIdle}, ok: true, now: now, want: Completed},
+		{name: "unseen and still fresh", session: endedSoon, live: piLive{Status: piIdle}, ok: true, now: now, want: Unread},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			state, reason := piSessionState(c.session, c.live, c.ok, c.lastSeen)
+			state, reason := piSessionState(c.session, c.live, c.ok, c.lastSeen, c.now)
 			if state != c.want {
 				t.Errorf("state = %v, want %v", state, c.want)
 			}
@@ -212,9 +222,11 @@ func TestPiWaitReasonFallsBackToTheSessionFile(t *testing.T) {
 func TestScanPiSkipsSubagentSessions(t *testing.T) {
 	root := t.TempDir()
 	cwd := "/Users/me/work/spark-go"
+	// Timestamps relative to now: a session touched now is today's whatever the hour
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
 	writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_top.jsonl",
 		piHeader("top", cwd)+
-			`{"type":"message","id":"m1","timestamp":"2026-10-15T10:00:05.000Z","message":{"role":"user","content":"real session"}}`+"\n")
+			`{"type":"message","id":"m1","timestamp":"`+stamp+`","message":{"role":"user","content":"real session"}}`+"\n")
 	// A sub-agent session lives in a directory under its parent's file
 	sub := filepath.Join(root, "--Users-me-work-spark-go--", "2026-10-15T10-00-00-000Z_top", "run-0")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -390,5 +402,46 @@ func appendPiLine(t *testing.T, path, line string) {
 	defer f.Close()
 	if _, err := f.WriteString(line + "\n"); err != nil {
 		t.Fatalf("append: %v", err)
+	}
+}
+
+// A session the extension reports but no pane hosts can't have its badge cleared by the user
+// looking at it, so it fades; one inside the window still counts as something to read
+func TestScanPiFadesTheBadgeOnASessionNothingReportsLooking(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	now := time.Now()
+	oldTime := now.Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	recentTime := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	lines := func(id, stamp string) string {
+		return piHeader(id, cwd) +
+			`{"type":"message","id":"m1","timestamp":"` + stamp + `","message":{"role":"user","content":"go"}}` + "\n" +
+			`{"type":"message","id":"m2","timestamp":"` + stamp + `","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}` + "\n"
+	}
+	pathOld := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_old.jsonl", lines("old", oldTime))
+	pathRecent := writePiSession(t, root, cwd, "2026-10-15T13-00-00-000Z_recent.jsonl", lines("recent", recentTime))
+
+	receiptDir := filepath.Join(root, "receipts")
+	receipt := func(id, path string) string {
+		return `{"sessionId":"` + id + `","sessionPath":"` + path + `","pid":` + strconv.Itoa(os.Getpid()) +
+			`,"state":"idle","updatedAtMs":` + strconv.FormatInt(now.UnixMilli(), 10) + `}`
+	}
+	writePiReceipt(t, receiptDir, "old.json", receipt("old", pathOld))
+	writePiReceipt(t, receiptDir, "recent.json", receipt("recent", pathRecent))
+
+	s := &Scanner{PiRoot: root, PiReceiptDir: receiptDir, HerdrSocket: filepath.Join(root, "missing.sock"), piSeen: NewPiSeen(filepath.Join(root, "seen.json"))}
+	found := s.scanPi(now)
+	if len(found) != 2 {
+		t.Fatalf("found %d sessions: %+v", len(found), found)
+	}
+	states := map[string]TaskState{}
+	for _, f := range found {
+		states[f.item.ID] = f.item.State
+	}
+	if states["old"] != Completed {
+		t.Errorf("an unseen session from two hours ago = %v, want Completed", states["old"])
+	}
+	if states["recent"] != Unread {
+		t.Errorf("an unseen session from a minute ago = %v, want Unread", states["recent"])
 	}
 }
