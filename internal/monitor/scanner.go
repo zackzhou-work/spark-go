@@ -56,7 +56,15 @@ type Scanner struct {
 	CodexRoot    string
 	CodexHome    string
 	CodexHookDir string
-	cpu          *cpuSampler
+	// PiRoot holds pi's session files, PiReceiptDir what spark's pi extension reports, and
+	// HerdrSocket the pane state Herdr keeps for the pi sessions it hosts
+	PiRoot        string
+	PiReceiptDir  string
+	HerdrSocket   string
+	cpu           *cpuSampler
+	piCache       map[string]piCached
+	herdrErrAt    time.Time
+	receiptPruned time.Time
 }
 
 func NewScanner() *Scanner {
@@ -71,12 +79,19 @@ func NewScanner() *Scanner {
 		CodexRoot:    CodexSessionsRoot(home),
 		CodexHome:    CodexHome(home),
 		CodexHookDir: CodexHookDir(home),
+		PiRoot:       PiSessionsRoot(home),
+		PiReceiptDir: PiReceiptDir(home),
+		HerdrSocket:  HerdrSocketPath(home),
 		cpu:          newCPUSampler(),
 	}
 }
 
 // WatchDirs are the directories to watch; the hooks directory is created first, since
-// it can't be watched until it exists
+// it can't be watched until it exists.
+//
+// pi's session directory is deliberately left out: watching a directory on macOS means
+// watching every file in it, and pi keeps hundreds of session files, so the rescan that
+// runs every few seconds is what picks pi up
 func (s *Scanner) WatchDirs() []string {
 	_ = os.MkdirAll(s.HooksDir, 0o755)
 	dirs := []string{s.SessionsDir, s.ProjectsRoot, s.HooksDir}
@@ -250,11 +265,24 @@ func (s *Scanner) scanClaude() []discovered {
 	return found
 }
 
-// ScanAll merges the Claude and Codex sides into one list
+// ScanAll merges the Claude, Codex and pi sides into one list
 func (s *Scanner) ScanAll() []ProjectGroup {
+	now := time.Now()
 	found := s.scanClaude()
-	found = append(found, s.scanCodex(time.Now())...)
+	found = append(found, s.scanCodex(now)...)
+	found = append(found, s.scanPi(now)...)
+	// Only a scan notices the receipts left behind by pi processes that are gone
+	s.pruneReceipts(now)
 	return groupByProject(found)
+}
+
+// pruneReceipts cleans up the extension's directory at most once an hour
+func (s *Scanner) pruneReceipts(now time.Time) {
+	if now.Sub(s.receiptPruned) < piReceiptPruneEvery {
+		return
+	}
+	s.receiptPruned = now
+	prunePiReceipts(s.PiReceiptDir, now)
 }
 
 // Timestamps may be milliseconds or seconds; tell them apart by magnitude

@@ -26,7 +26,7 @@ func TestBanner(t *testing.T) {
 		t.Skip("set SPARK_BANNER=1 to regenerate docs/banner.png")
 	}
 	dir := t.TempDir()
-	writePNG(t, filepath.Join(dir, "app.png"), renderDemoApp())
+	writePNG(t, filepath.Join(dir, "app.png"), renderDemoApp(t))
 	copyFile(t, "docs/banner/index.html", filepath.Join(dir, "index.html"))
 	copyFile(t, "resources/icon.png", filepath.Join(dir, "icon.png"))
 
@@ -64,7 +64,8 @@ func TestIcon(t *testing.T) {
 
 // renderDemoApp renders the Today page with made-up sessions, hovering a row to reveal the
 // jump arrow
-func renderDemoApp() *image.RGBA {
+func renderDemoApp(t *testing.T) *image.RGBA {
+	t.Helper()
 	a := demoApp()
 	const scale = 2
 	tt := ui.NewTester(a.view, 360, 640)
@@ -72,7 +73,11 @@ func renderDemoApp() *image.RGBA {
 	// Characters don't blink and bubbles don't bob, so each expression is captured at rest
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
 	tt.Frame()
-	r, _ := tt.Find("Upgrade the router to v7")
+	// Fail loudly rather than render a banner that silently lost the hovered row
+	r, ok := tt.Find("Upgrade the router to v7")
+	if !ok {
+		t.Fatalf("no row to hover; the banner shows %q", tt.Texts())
+	}
 	tt.Move(r.X+40, r.Y+r.H/2)
 	tt.Frame()
 
@@ -85,7 +90,10 @@ func renderDemoApp() *image.RGBA {
 	return img
 }
 
-// demoApp is a set of made-up sessions covering all four states, from both agents
+// demoApp is a set of made-up sessions covering all four states, from all three agents.
+//
+// Six projects, because that is what the banner's layout was composed around: two needing
+// you, four with tiles
 func demoApp() *app {
 	now := time.Now()
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -95,14 +103,19 @@ func demoApp() *app {
 			{ID: "local_2", Title: "Fix flaky checkout integration test", State: monitor.Waiting, ActivityAt: ago(2 * time.Minute), IsToday: true},
 			{ID: "local_3", Title: "Upgrade the router to v7", State: monitor.Unread, ActivityAt: ago(14 * time.Minute), IsToday: true},
 			{ID: "local_8", Title: "Migrate to the new auth client", State: monitor.Completed, ActivityAt: ago(50 * time.Hour)},
+			// pi shares a project with the rest, so its sessions sit in the same rows
+			{ID: "01a139f7-774a-705c-a47e-49deb8437f52", Source: monitor.SourcePi, Title: "Backfill events for September", State: monitor.Unread, ActivityAt: ago(38 * time.Minute), IsToday: true},
 		}},
 		{ProjectName: "data-pipeline", Sessions: []monitor.SessionItem{
-			{ID: "local_4", Title: "Backfill events for September", State: monitor.Running, ActivityAt: now, IsToday: true},
-			{ID: "local_5", Title: "Profile the nightly aggregation job", State: monitor.Completed, ActivityAt: ago(time.Hour), IsToday: true},
+			{ID: "local_4", Title: "Profile the nightly aggregation job", State: monitor.Running, ActivityAt: now, IsToday: true},
+			{ID: "local_5", Title: "Rebuild the ingest pipeline", State: monitor.Completed, ActivityAt: ago(time.Hour), IsToday: true},
+			{ID: "01a13f06-5941-7138-a5d7-056c36fd2894", Source: monitor.SourcePi, Title: "Compact the nightly rollups", State: monitor.Running, Pane: "w4:pF", ActivityAt: now, IsToday: true},
 		}},
 		{ProjectName: "docs-site", Sessions: []monitor.SessionItem{
 			{ID: "local_6", Title: "Rewrite the getting started guide", State: monitor.Unread, ActivityAt: ago(38 * time.Minute), IsToday: true},
 			{ID: "local_7", Title: "Add search to the API reference", State: monitor.Completed, ActivityAt: ago(75 * time.Hour)},
+			// No live signal: pi ran this one in a terminal spark can't see
+			{ID: "01a13919-4037-72b8-8b7e-c47d3459020f", Source: monitor.SourcePi, Title: "Trace the slow ranking query", State: monitor.Completed, NoSignal: true, ActivityAt: ago(11 * time.Hour), IsToday: true},
 		}},
 		{ProjectName: "search-api", Sessions: []monitor.SessionItem{
 			{ID: "local_9", Title: "Pick an embedding model", State: monitor.Waiting, WaitReason: monitor.WaitQuestion, ActivityAt: ago(8 * time.Minute), IsToday: true},

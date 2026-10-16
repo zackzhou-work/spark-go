@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"bytes"
+	"errors"
 	"sync"
 	"time"
 	"unsafe"
@@ -37,6 +38,16 @@ func listProcesses() []procInfo {
 		})
 	}
 	return out
+}
+
+// processAlive reports whether a pid is still in use. Not being allowed to signal another
+// user's process still proves it exists
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := unix.Kill(pid, 0)
+	return err == nil || errors.Is(err, unix.EPERM)
 }
 
 var hostSessionKey = []byte("CLAUDE_CODE_HOST_SESSION_ID=")

@@ -68,11 +68,16 @@ const (
 	SourceClaude SessionSource = iota
 	// SourceCodex is a Codex thread, whether from the desktop app, a CLI, or an IDE
 	SourceCodex
+	// SourcePi is a pi session, whether it runs in Herdr, an IDE or a plain terminal
+	SourcePi
 )
 
 func (s SessionSource) String() string {
-	if s == SourceCodex {
+	switch s {
+	case SourceCodex:
 		return "Codex"
+	case SourcePi:
+		return "pi"
 	}
 	return "Claude"
 }
@@ -87,6 +92,11 @@ type SessionItem struct {
 	WorkingDir string
 	ActivityAt time.Time
 	IsToday    bool
+	// Pane is the Herdr pane hosting the session, empty when there is nothing to focus
+	Pane string
+	// NoSignal marks a pi session nothing is reporting on: spark only knows its turn is
+	// over, so the row says so instead of guessing that it is running
+	NoSignal bool
 }
 
 type ProjectGroup struct {
@@ -135,6 +145,17 @@ func SplitWaiting(groups []ProjectGroup) ([]PendingSession, []ProjectGroup) {
 		}
 	}
 	return waiting, rest
+}
+
+func (s SessionItem) Jumpable() bool {
+	switch s.Source {
+	case SourcePi:
+		// A pi session has somewhere to go only while Herdr hosts its pane; anywhere else
+		// there is nothing to focus
+		return s.Pane != ""
+	default:
+		return true
+	}
 }
 
 func CountSessions(groups []ProjectGroup) int {
