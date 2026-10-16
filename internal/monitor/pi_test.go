@@ -720,3 +720,31 @@ func TestPiTurnEventIgnoresTheQuestionToolNameInArguments(t *testing.T) {
 		t.Errorf("wait reason = %v, want an approval", got)
 	}
 }
+
+// The tool a record hangs on can sit behind a long reasoning block, further in than the first
+// window, so the window has to grow rather than give up on it
+func TestPiTurnEventFindsAQuestionBehindALongReasoningBlock(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	base := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	thinking := strings.Repeat("weighing it up ", 700)
+	padding := strings.Repeat("detail ", 12_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+base.Format(time.RFC3339Nano)+`","message":{"role":"user","content":"ask me"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+base.Add(time.Second).Format(time.RFC3339Nano)+`","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"thinking","thinking":"`+thinking+`"},{"type":"toolCall","id":"c1","name":"ask_user_question","arguments":{"note":"`+padding+`"}}]}}`+"\n")
+	if size := fileSize(t, path); size < piTailBytes+int64(piRecordHeadBytes) {
+		t.Fatalf("the fixture is %d bytes, not long enough to push the tool past the first window", size)
+	}
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	if session.LastEvent != AwaitingUser {
+		t.Errorf("last event = %v, want the question behind the reasoning", session.LastEvent)
+	}
+	if got := piWaitReason(session, piLive{Status: piBlocked}); got != WaitQuestion {
+		t.Errorf("wait reason = %v, want a question", got)
+	}
+}

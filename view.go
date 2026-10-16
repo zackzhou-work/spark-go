@@ -948,13 +948,17 @@ func (a *app) piNeedsReload() bool {
 	return a.piInstallWaiting()
 }
 
-// refreshPiSetup records what is on disk for pi: which version of the extension is installed,
-// when it was written, and whether a session has reported from it
-func (a *app) refreshPiSetup(home string) {
-	a.piState = monitor.PiExtensionOnDisk(home)
-	a.piInstalledAt = monitor.PiInstalledAt(home)
-	a.piReported = monitor.PiReported(home)
-	a.piHookInstalled = a.piState == monitor.PiExtensionCurrent
+// applySideState records what the scan read about the hooks and pi's setup, so a view build
+// never has to touch the disk
+func (a *app) applySideState(side sideState) {
+	a.hookInstalled, a.codexHookInstalled = side.hooked, side.codexHooked
+	a.applyPiSetup(side)
+}
+
+// applyPiSetup is the pi half, which is what installing or updating touches
+func (a *app) applyPiSetup(side sideState) {
+	a.piHookInstalled, a.piState, a.piReported = side.piInstalled, side.piState, side.piReported
+	a.piInstalledAt = side.piInstalledAt
 }
 
 // piInstallWaiting reports whether the current extension is in place but no pi session has
@@ -994,7 +998,9 @@ func (a *app) piSetupNotice(c *ui.Context, p palette) {
 					log.Printf("[Hooks] updating the pi extension failed: %v", err)
 					return
 				}
-				a.refreshPiSetup(home)
+				// The file is the one this build ships now; the reload it asks for next is what
+				// proves a session loaded it
+				a.applyPiSetup(readSideState(home))
 				return
 			}
 			a.piNoticeDismissed = a.piInstalledAt
@@ -1063,7 +1069,7 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 					log.Printf("[Hooks] installing the pi extension failed: %v", err)
 					return
 				}
-				a.refreshPiSetup(home)
+				a.applyPiSetup(readSideState(home))
 			})
 		}
 	}

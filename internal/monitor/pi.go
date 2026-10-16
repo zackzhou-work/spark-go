@@ -287,22 +287,39 @@ type piRecordHead struct {
 // Asks reports whether the record is the question tool left hanging
 func (h piRecordHead) Asks() bool { return h.Tool == piAskTool }
 
-// piLastRecordHead reads the fields at the start of the record that contains offset. Only a
-// bounded prefix is read, and the fields that matter are the ones pi writes first
+// piLastRecordHead reads the fields at the start of the record that contains offset. A record
+// can be larger than the window the tail is read in, and the tool it hangs on can sit behind a
+// long reasoning or text block, so the window grows until the fields are in it or the record
+// ends
 func piLastRecordHead(f *os.File, offset int64) (piRecordHead, bool) {
 	start := piLastRecordStart(f, offset)
-	head, err := readAt(f, start, piRecordHeadBytes)
-	if err != nil || len(head) == 0 {
-		return piRecordHead{}, false
+	window := int64(piRecordHeadBytes)
+	for {
+		buf, err := readAt(f, start, window)
+		if err != nil || len(buf) == 0 {
+			return piRecordHead{}, false
+		}
+		head, complete := piRecordHeadIn(buf)
+		// A prefix shorter than the window is the whole record, and one that filled it has
+		// nothing more to offer
+		if complete || int64(len(buf)) < window || window >= piMaxLineBytes {
+			return head, head.Timestamp != "" || head.Type != ""
+		}
+		window = min(window*2, piMaxLineBytes)
 	}
+}
 
+// piRecordHeadIn reads the fields out of a prefix of a record. complete says the prefix held
+// everything worth having: either the fields were all found, or the record itself ended
+func piRecordHeadIn(buf []byte) (piRecordHead, bool) {
 	var out piRecordHead
-	dec := json.NewDecoder(bytes.NewReader(head))
+	dec := json.NewDecoder(bytes.NewReader(buf))
 	depth, expecting := 0, ""
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			break
+			// Truncated, unless this is simply the end of a complete record
+			return out, err == io.EOF
 		}
 		switch t := tok.(type) {
 		case string:
@@ -319,8 +336,8 @@ func piLastRecordHead(f *os.File, offset int64) (piRecordHead, bool) {
 				out.Role = t
 			case expecting == "name" && depth == 4:
 				// A content block's name, which is where a tool call says what it is. Matching
-				// the identifier anywhere in the record would also match a command that
-				// mentions it, and an approval would then read as a question
+				// the identifier anywhere in the record would also match a command that mentions
+				// it, and an approval would then read as a question
 				out.Tool = t
 			}
 			expecting = ""
@@ -333,13 +350,10 @@ func piLastRecordHead(f *os.File, offset int64) (piRecordHead, bool) {
 		default:
 			expecting = ""
 		}
-		if out.Type != "" && out.Timestamp != "" && (out.Type != "message" || out.Role != "") && out.Tool != "" {
+		if out.Type != "" && out.Timestamp != "" && (out.Type != "message" || (out.Role != "" && out.Tool != "")) {
 			return out, true
 		}
 	}
-	// The head can end before a tool name, which only a call has; the caller falls back to what
-	// the complete records say
-	return out, out.Timestamp != ""
 }
 
 // piLastRecordStart walks back to the newline before the record holding offset, so a record

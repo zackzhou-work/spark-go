@@ -178,7 +178,7 @@ func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
 	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "old", Sessions: []monitor.SessionItem{
 		{ID: "local_1", Title: "Last week's work", State: monitor.Completed, ActivityAt: time.Now().Add(-72 * time.Hour)},
 	}}}, hookInstalled: true, codexHookInstalled: true}
-	a.refreshPiSetup(home)
+	a.applyPiSetup(readSideState(home))
 
 	tt := newViewTester(a, 360, 640)
 	if !tt.HasText("One more step for pi") {
@@ -191,7 +191,7 @@ func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
 	// A receipt from a session still running an older extension says nothing about the new
 	// one, however recently it was rewritten
 	writeReceiptForTest(t, home, "old.json", 0)
-	a.refreshPiSetup(home)
+	a.applyPiSetup(readSideState(home))
 	tt.Frame()
 	if !tt.HasText("One more step for pi") {
 		t.Errorf("an older payload should not count; it shows %q", tt.Texts())
@@ -199,7 +199,7 @@ func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
 
 	// One from the payload this build installs means a pi process loaded it
 	writeReceiptForTest(t, home, "fresh.json", 1)
-	a.refreshPiSetup(home)
+	a.applyPiSetup(readSideState(home))
 	tt.Frame()
 	if tt.HasText("One more step for pi") {
 		t.Errorf("the card should go once a session reports; it shows %q", tt.Texts())
@@ -233,7 +233,7 @@ func TestTodayNoticePointsAtThePiReload(t *testing.T) {
 	installedAt := monitor.PiInstalledAt(home)
 	a := demoApp()
 	a.hookInstalled, a.codexHookInstalled = true, true
-	a.refreshPiSetup(home)
+	a.applyPiSetup(readSideState(home))
 
 	tt := newViewTester(a, 360, 640)
 	if !tt.HasText("need /reload or a restart") {
@@ -257,7 +257,7 @@ func TestTodayNoticePointsAtThePiReload(t *testing.T) {
 	if err := os.Chtimes(monitor.PiExtensionPath(home), installedAt.Add(time.Hour), installedAt.Add(time.Hour)); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
-	a.refreshPiSetup(home)
+	a.applyPiSetup(readSideState(home))
 	tt.Frame()
 	if !tt.HasText("need /reload or a restart") {
 		t.Errorf("a later install brings the line back; it shows %q", tt.Texts())
@@ -265,7 +265,7 @@ func TestTodayNoticePointsAtThePiReload(t *testing.T) {
 
 	// And a session reporting afterwards takes it away for good
 	writeReceiptForTest(t, home, "fresh.json", 1)
-	a.refreshPiSetup(home)
+	a.applyPiSetup(readSideState(home))
 	tt.Frame()
 	if tt.HasText("need /reload or a restart") {
 		t.Errorf("a session loaded it, so there is nothing left to say; it shows %q", tt.Texts())
