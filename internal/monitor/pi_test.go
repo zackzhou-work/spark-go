@@ -693,3 +693,30 @@ func TestPiTurnEventPrefersACompleteRecordOverTheSalvagedOne(t *testing.T) {
 		t.Errorf("wait reason = %v, want an approval", got)
 	}
 }
+
+// A command that merely mentions the question tool is not the question tool: the name has to
+// be the call's own, or an approval reads as a question
+func TestPiTurnEventIgnoresTheQuestionToolNameInArguments(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	base := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	padding := strings.Repeat("output ", 12_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+base.Format(time.RFC3339Nano)+`","message":{"role":"user","content":"look into it"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+base.Add(time.Second).Format(time.RFC3339Nano)+`","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"grep -rn ask_user_question internal/monitor/pi.go","note":"`+padding+`"}}]}}`+"\n")
+	if size := fileSize(t, path); size < piTailBytes {
+		t.Fatalf("the fixture is %d bytes, not big enough to fill the tail window", size)
+	}
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	if session.LastEvent == AwaitingUser {
+		t.Error("a mention of the tool in the command is not the tool being called")
+	}
+	if got := piWaitReason(session, piLive{Status: piBlocked}); got != WaitPermission {
+		t.Errorf("wait reason = %v, want an approval", got)
+	}
+}

@@ -29,8 +29,8 @@ func main() {
 		groups:             scanner.ScanAll(),
 		hookInstalled:      monitor.HookInstalled(home),
 		codexHookInstalled: monitor.CodexHooksInstalled(home),
-		piHookInstalled:    monitor.PiExtensionInstalled(home),
 	}
+	a.refreshPiSetup(home)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -77,9 +77,13 @@ func main() {
 			last = groups
 			hooked := monitor.HookInstalled(home)
 			codexHooked := monitor.CodexHooksInstalled(home)
-			piHooked := monitor.PiExtensionInstalled(home)
+			// What pi's setup line needs comes from disk, so it is read here rather than in the
+			// view, which rebuilds several times for one event
+			pi := &app{}
+			pi.refreshPiSetup(home)
 			win.Update(func() {
-				a.groups, a.hookInstalled, a.codexHookInstalled, a.piHookInstalled = groups, hooked, codexHooked, piHooked
+				a.groups, a.hookInstalled, a.codexHookInstalled = groups, hooked, codexHooked
+				a.piState, a.piInstalledAt, a.piReported, a.piHookInstalled = pi.piState, pi.piInstalledAt, pi.piReported, pi.piHookInstalled
 			})
 			return true
 		})

@@ -135,6 +135,12 @@ type app struct {
 	hookInstalled      bool
 	codexHookInstalled bool
 	piHookInstalled    bool
+	// piState, piInstalledAt and piReported are what the pi setup line and the banner go by.
+	// They are read from disk on the scan goroutine rather than in the view: mygo rebuilds a
+	// view several times for one event, and a view build must not do filesystem I/O
+	piState       monitor.PiExtensionState
+	piInstalledAt time.Time
+	piReported    bool
 	// piNoticeDismissed is the install the setup notice was dismissed for, so a later install
 	// brings it back
 	piNoticeDismissed time.Time
@@ -942,17 +948,19 @@ func (a *app) piNeedsReload() bool {
 	return a.piInstallWaiting()
 }
 
+// refreshPiSetup records what is on disk for pi: which version of the extension is installed,
+// when it was written, and whether a session has reported from it
+func (a *app) refreshPiSetup(home string) {
+	a.piState = monitor.PiExtensionOnDisk(home)
+	a.piInstalledAt = monitor.PiInstalledAt(home)
+	a.piReported = monitor.PiReported(home)
+	a.piHookInstalled = a.piState == monitor.PiExtensionCurrent
+}
+
 // piInstallWaiting reports whether the current extension is in place but no pi session has
 // loaded it yet, which is what the reload line is about
 func (a *app) piInstallWaiting() bool {
-	if !a.piHookInstalled {
-		return false
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	return monitor.PiExtensionOnDisk(home) == monitor.PiExtensionCurrent && !monitor.PiReported(home)
+	return a.piHookInstalled && a.piState == monitor.PiExtensionCurrent && !a.piReported
 }
 
 // piSetupNotice is the line under a page's heading for the two things pi still needs from
@@ -960,19 +968,13 @@ func (a *app) piInstallWaiting() bool {
 // can't. The install button lives in the banner, which only an empty list shows, so without
 // this a user with sessions in front of them would have no way to either
 func (a *app) piSetupNotice(c *ui.Context, p palette) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-
 	body, label := "", ""
-	switch monitor.PiExtensionOnDisk(home) {
+	switch a.piState {
 	case monitor.PiExtensionOutdated:
 		// Reloading would load that same file, so the only way out is writing the new one
 		body, label = "The Spark extension for pi is out of date. Update it so pi reports what it is doing.", "Update"
 	case monitor.PiExtensionCurrent:
-		installedAt := monitor.PiInstalledAt(home)
-		if monitor.PiReported(home) || a.piNoticeDismissed.Equal(installedAt) {
+		if a.piReported || a.piNoticeDismissed.Equal(a.piInstalledAt) {
 			return
 		}
 		body, label = "pi is set up, but sessions that are already running need /reload or a restart before they report.", "Dismiss"
@@ -983,15 +985,19 @@ func (a *app) piSetupNotice(c *ui.Context, p palette) {
 	ui.Row(c).Background(p.tile).Radius(14).Padding(10, 12).Gap(10).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, body).FontSize(12).LineHeight(1.5).TextColor(p.sec).Grow(1).MinWidth(0)
 		pillButton(c, p, label, false, 24, 11).OnClick(func() {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return
+			}
 			if label == "Update" {
 				if err := monitor.InstallPiExtension(home); err != nil {
 					log.Printf("[Hooks] updating the pi extension failed: %v", err)
 					return
 				}
-				a.piHookInstalled = true
+				a.refreshPiSetup(home)
 				return
 			}
-			a.piNoticeDismissed = monitor.PiInstalledAt(home)
+			a.piNoticeDismissed = a.piInstalledAt
 		})
 	})
 }
@@ -1057,7 +1063,7 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 					log.Printf("[Hooks] installing the pi extension failed: %v", err)
 					return
 				}
-				a.piHookInstalled = true
+				a.refreshPiSetup(home)
 			})
 		}
 	}

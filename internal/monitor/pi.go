@@ -155,7 +155,7 @@ func readPiSession(path string, prev piRead) (piRead, bool) {
 				// A question in it has no answer yet, and its head is all spark can read of a
 				// record too large for the window. It is only a fallback: the complete
 				// records after it, if there are any, are newer and say more
-				if head.Asks {
+				if head.Asks() {
 					salvaged, hasSalvaged = AwaitingUser, true
 				}
 			}
@@ -276,13 +276,16 @@ func piNameAt(f *os.File, from, size int64, fallback string) (string, int64) {
 }
 
 // piRecordHead is the start of a record: enough to tell when it happened, whether it was part
-// of the conversation, and whether it is the question tool left hanging
+// of the conversation, and what tool it is left hanging on
 type piRecordHead struct {
 	Type      string
 	Timestamp string
 	Role      string
-	Asks      bool
+	Tool      string
 }
+
+// Asks reports whether the record is the question tool left hanging
+func (h piRecordHead) Asks() bool { return h.Tool == piAskTool }
 
 // piLastRecordHead reads the fields at the start of the record that contains offset. Only a
 // bounded prefix is read, and the fields that matter are the ones pi writes first
@@ -294,8 +297,6 @@ func piLastRecordHead(f *os.File, offset int64) (piRecordHead, bool) {
 	}
 
 	var out piRecordHead
-	// The tool's name comes before its arguments, so a record too large to read still says it
-	out.Asks = bytes.Contains(head, []byte(piAskTool))
 	dec := json.NewDecoder(bytes.NewReader(head))
 	depth, expecting := 0, ""
 	for {
@@ -316,6 +317,11 @@ func piLastRecordHead(f *os.File, offset int64) (piRecordHead, bool) {
 				out.Timestamp = t
 			case expecting == "role" && depth == 2:
 				out.Role = t
+			case expecting == "name" && depth == 4:
+				// A content block's name, which is where a tool call says what it is. Matching
+				// the identifier anywhere in the record would also match a command that
+				// mentions it, and an approval would then read as a question
+				out.Tool = t
 			}
 			expecting = ""
 		case json.Delim:
@@ -327,10 +333,12 @@ func piLastRecordHead(f *os.File, offset int64) (piRecordHead, bool) {
 		default:
 			expecting = ""
 		}
-		if out.Type != "" && out.Timestamp != "" && (out.Type != "message" || out.Role != "") {
+		if out.Type != "" && out.Timestamp != "" && (out.Type != "message" || out.Role != "") && out.Tool != "" {
 			return out, true
 		}
 	}
+	// The head can end before a tool name, which only a call has; the caller falls back to what
+	// the complete records say
 	return out, out.Timestamp != ""
 }
 

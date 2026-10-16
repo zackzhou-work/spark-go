@@ -288,7 +288,7 @@ func TestTodayNoticeOffersToUpdateAnOutdatedExtension(t *testing.T) {
 
 	a := demoApp()
 	a.hookInstalled, a.codexHookInstalled = true, true
-	a.piHookInstalled = monitor.PiExtensionInstalled(home)
+	a.refreshPiSetup(home)
 	tt := newViewTester(a, 360, 640)
 	if !tt.HasText("out of date") {
 		t.Fatalf("the page should say the extension needs updating; it shows %q", tt.Texts())
