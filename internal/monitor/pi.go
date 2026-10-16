@@ -28,7 +28,9 @@ const (
 	piUnreadWindow = 30 * time.Minute
 	// Session entries are one JSON object per line; a tool output can make one enormous
 	piMaxLineBytes = 8 * 1024 * 1024
-	piSessionInfo  = `"session_info"`
+	// Enough of a record's head for its type, its timestamp and a message's role
+	piRecordHeadBytes = 4 * 1024
+	piSessionInfo     = `"session_info"`
 )
 
 // PiSession is what spark reads out of one pi session file
@@ -140,6 +142,19 @@ func readPiSession(path string, nameFrom int64, name string) (piRead, bool) {
 	}
 	tailLines := piLines(tail, false)
 	if start > 0 && len(tailLines) > 0 {
+		// The window can open inside the last record, which is then the only one here and
+		// usually the longest: a single assistant reply or tool argument can pass 64KB. Its
+		// head says when it happened, and reading that beats pulling megabytes in to decode
+		if head, ok := piLastRecordHead(f, start); ok {
+			if ts := piRecordTime(head.Timestamp); ts > out.ActivityAt {
+				out.ActivityAt = ts
+			}
+			if head.Type == "message" {
+				if ts := piRecordTime(head.Timestamp); ts > out.TurnAt {
+					out.TurnAt = ts
+				}
+			}
+		}
 		// The first line is incomplete when the tail starts mid-file
 		tailLines = tailLines[1:]
 	}
@@ -203,11 +218,89 @@ func piNameAt(f *os.File, from, size int64, fallback string) (string, int64) {
 		if !bytes.Contains(line, []byte(piSessionInfo)) {
 			continue
 		}
-		if r, ok := decodePiRecord(line); ok && r.Type == "session_info" && r.Name != "" {
-			name = r.Name
+		// The latest entry decides, and an empty name is how pi records a clear, so this
+		// takes the value as written rather than keeping the last name it saw
+		if r, ok := decodePiRecord(line); ok && r.Type == "session_info" {
+			name = strings.TrimSpace(r.Name)
 		}
 	}
 	return name, scanned
+}
+
+// piRecordHead is the start of a record: enough to tell when it happened and whether it was
+// part of the conversation
+type piRecordHead struct {
+	Type      string
+	Timestamp string
+	Role      string
+}
+
+// piLastRecordHead reads the fields at the start of the record that contains offset. Only a
+// bounded prefix is read, and the fields that matter are the ones pi writes first
+func piLastRecordHead(f *os.File, offset int64) (piRecordHead, bool) {
+	start := piLastRecordStart(f, offset)
+	head, err := readAt(f, start, piRecordHeadBytes)
+	if err != nil || len(head) == 0 {
+		return piRecordHead{}, false
+	}
+
+	var out piRecordHead
+	dec := json.NewDecoder(bytes.NewReader(head))
+	depth, expecting := 0, ""
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		switch t := tok.(type) {
+		case string:
+			if expecting == "" {
+				expecting = t
+				continue
+			}
+			switch {
+			case expecting == "type" && depth == 1:
+				out.Type = t
+			case expecting == "timestamp" && depth == 1:
+				out.Timestamp = t
+			case expecting == "role" && depth == 2:
+				out.Role = t
+			}
+			expecting = ""
+		case json.Delim:
+			if t == '{' || t == '[' {
+				depth++
+			} else {
+				depth--
+			}
+		default:
+			expecting = ""
+		}
+		if out.Type != "" && out.Timestamp != "" && (out.Type != "message" || out.Role != "") {
+			return out, true
+		}
+	}
+	return out, out.Timestamp != ""
+}
+
+// piLastRecordStart walks back to the newline before the record holding offset, so a record
+// larger than the tail window can still be read from its start. A record longer than the
+// longest line worth reading gives up rather than walking the whole file
+func piLastRecordStart(f *os.File, offset int64) int64 {
+	const chunk = 64 * 1024
+	limit := max(offset-piMaxLineBytes, 0)
+	for end := offset; end > limit; {
+		start := max(end-chunk, limit)
+		buf, err := readAt(f, start, end-start)
+		if err != nil {
+			break
+		}
+		if i := bytes.LastIndexByte(buf, '\n'); i >= 0 {
+			return start + int64(i) + 1
+		}
+		end = start
+	}
+	return limit
 }
 
 // piToolResults collects the tool calls that already came back, so a call still hanging at
@@ -300,7 +393,8 @@ func decodePiRecord(line []byte) (piRecord, bool) {
 	return r, true
 }
 
-// piEntryTime is the entry's own timestamp, falling back to the message's
+// piEntryTime is the entry's own timestamp, falling back to the message's, which is a Unix
+// time in milliseconds rather than an ISO string
 func piEntryTime(line []byte) int64 {
 	var r struct {
 		Timestamp string `json:"timestamp"`
@@ -311,13 +405,22 @@ func piEntryTime(line []byte) int64 {
 	if json.Unmarshal(line, &r) != nil {
 		return 0
 	}
-	if t, err := time.Parse(time.RFC3339Nano, r.Timestamp); err == nil {
-		return t.UnixMilli()
+	if ts := piRecordTime(r.Timestamp); ts > 0 {
+		return ts
 	}
 	if r.Message != nil {
 		return r.Message.Timestamp
 	}
 	return 0
+}
+
+// piRecordTime parses an entry's ISO timestamp
+func piRecordTime(stamp string) int64 {
+	t, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 func readAt(f *os.File, offset, length int64) ([]byte, error) {

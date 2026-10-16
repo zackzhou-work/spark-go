@@ -557,3 +557,70 @@ func TestScanPiKeepsASessionSomethingStillReports(t *testing.T) {
 		t.Error("the extension is reporting on it, so the row doesn't claim it has no signal")
 	}
 }
+
+// pi records a cleared name as an empty one, and its own reader takes the latest entry as the
+// answer, so spark has to do the same instead of keeping the name it saw before
+func TestPiSessionsHonourAClearedName(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+	path := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+stamp+`","message":{"role":"user","content":"first words"}}`+"\n"+
+			`{"type":"session_info","id":"m2","timestamp":"`+stamp+`","name":"Named once"}`+"\n")
+
+	session, ok := ReadPiSession(path)
+	if !ok || session.Title != "Named once" {
+		t.Fatalf("title = %q, want the name that was set", session.Title)
+	}
+
+	// The clear, read both ways: the file on its own, and through the cache that carries the
+	// name from one scan to the next
+	appendPiLine(t, path, `{"type":"session_info","id":"m3","timestamp":"`+stamp+`","name":""}`)
+	session, ok = ReadPiSession(path)
+	if !ok || session.Title != "first words" {
+		t.Errorf("title = %q, want the first user message after the clear", session.Title)
+	}
+	s := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: filepath.Join(root, "missing.sock")}
+	found := s.scanPi(time.Now())
+	if len(found) != 1 || found[0].item.Title != "first words" {
+		t.Errorf("scanned title = %q, want the clear to survive the cache", found[0].item.Title)
+	}
+	// And nothing resurrects it afterwards
+	appendPiLine(t, path, `{"type":"message","id":"m4","timestamp":"`+stamp+`","message":{"role":"assistant","content":[{"type":"text","text":"later"}],"stopReason":"stop"}}`)
+	found = s.scanPi(time.Now())
+	if len(found) != 1 || found[0].item.Title != "first words" {
+		t.Errorf("scanned title = %q, want it to stay cleared", found[0].item.Title)
+	}
+}
+
+// One record can be bigger than the whole tail window, and the last record of a turn often
+// is: a single long reply or tool argument passes 64KB. Its tail end is then all the window
+// holds, so its start has to be read to know when the turn happened
+func TestReadPiSessionReadsAHugeFinalRecord(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	base := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	userAt := base.Format(time.RFC3339Nano)
+	replyAt := base.Add(time.Minute).Format(time.RFC3339Nano)
+	huge := strings.Repeat("answer ", 12_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+userAt+`","message":{"role":"user","content":"write me an essay"}}`+"\n"+
+			`{"type":"message","id":"m2","parentId":"m1","timestamp":"`+replyAt+`","message":{"role":"assistant","content":[{"type":"text","text":"`+huge+`"}],"stopReason":"stop"}}`+"\n")
+	if size := fileSize(t, path); size < piTailBytes {
+		t.Fatalf("the fixture is %d bytes, not big enough to fill the tail window", size)
+	}
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	want := base.Add(time.Minute).UnixMilli()
+	if session.TurnAt != want {
+		t.Errorf("turn time = %s, want the reply's own %s", time.UnixMilli(session.TurnAt), time.UnixMilli(want))
+	}
+	if session.ActivityAt != want {
+		t.Errorf("activity = %s, want %s", time.UnixMilli(session.ActivityAt), time.UnixMilli(want))
+	}
+}
