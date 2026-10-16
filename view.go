@@ -939,39 +939,60 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 // it landed. pi loads extensions when it starts, so writing the file changes nothing for a
 // session that is already up
 func (a *app) piNeedsReload() bool {
-	_, waiting := a.piInstallWaiting()
-	return waiting
+	return a.piInstallWaiting()
 }
 
-// piInstallWaiting is the moment the extension was installed and whether it is still waiting
-// to be picked up
-func (a *app) piInstallWaiting() (time.Time, bool) {
+// piInstallWaiting reports whether the current extension is in place but no pi session has
+// loaded it yet, which is what the reload line is about
+func (a *app) piInstallWaiting() bool {
 	if !a.piHookInstalled {
-		return time.Time{}, false
+		return false
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return time.Time{}, false
+		return false
 	}
-	installedAt := monitor.PiInstalledAt(home)
-	if installedAt.IsZero() || monitor.PiReported(home) {
-		return installedAt, false
-	}
-	return installedAt, true
+	return monitor.PiExtensionOnDisk(home) == monitor.PiExtensionCurrent && !monitor.PiReported(home)
 }
 
-// piSetupNotice is the line under a page's heading while pi hasn't loaded the extension yet.
-// The install button lives in the banner, which only an empty list shows, so a user with
-// sessions in front of them would otherwise never learn that pi is one command away
+// piSetupNotice is the line under a page's heading for the two things pi still needs from
+// outside it: an outdated extension, which spark can write itself, and a reload, which it
+// can't. The install button lives in the banner, which only an empty list shows, so without
+// this a user with sessions in front of them would have no way to either
 func (a *app) piSetupNotice(c *ui.Context, p palette) {
-	installedAt, waiting := a.piInstallWaiting()
-	if !waiting || a.piNoticeDismissed.Equal(installedAt) {
+	home, err := os.UserHomeDir()
+	if err != nil {
 		return
 	}
+
+	body, label := "", ""
+	switch monitor.PiExtensionOnDisk(home) {
+	case monitor.PiExtensionOutdated:
+		// Reloading would load that same file, so the only way out is writing the new one
+		body, label = "The Spark extension for pi is out of date. Update it so pi reports what it is doing.", "Update"
+	case monitor.PiExtensionCurrent:
+		installedAt := monitor.PiInstalledAt(home)
+		if monitor.PiReported(home) || a.piNoticeDismissed.Equal(installedAt) {
+			return
+		}
+		body, label = "pi is set up, but sessions that are already running need /reload or a restart before they report.", "Dismiss"
+	default:
+		return
+	}
+
 	ui.Row(c).Background(p.tile).Radius(14).Padding(10, 12).Gap(10).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "pi is set up, but sessions that are already running need /reload or a restart before they report.").
-			FontSize(12).LineHeight(1.5).TextColor(p.sec).Grow(1).MinWidth(0)
-		pillButton(c, p, "Dismiss", false, 24, 11).OnClick(func() { a.piNoticeDismissed = installedAt })
+		ui.Text(c, body).FontSize(12).LineHeight(1.5).TextColor(p.sec).Grow(1).MinWidth(0)
+		pillButton(c, p, label, false, 24, 11).OnClick(func() {
+			if label == "Update" {
+				if err := monitor.InstallPiExtension(home); err != nil {
+					log.Printf("[Hooks] updating the pi extension failed: %v", err)
+					return
+				}
+				a.piHookInstalled = true
+				return
+			}
+			a.piNoticeDismissed = monitor.PiInstalledAt(home)
+		})
 	})
 }
 

@@ -120,9 +120,11 @@ func readPiSession(path string, prev piRead) (piRead, bool) {
 	// Activity comes from the newest entry the tail shows, falling back to the file's own
 	// time only when nothing in it parses
 	out := PiSession{Path: path}
-	// gotEvent says the newest message has been classified, which the salvaged record below
-	// may already have done
+	// gotEvent says the newest message has been classified; the salvaged record below can only
+	// stand in when the window holds no complete one
 	gotEvent := false
+	salvaged := TurnEvent(0)
+	hasSalvaged := false
 	head := prev.head
 	if head.id == "" {
 		head, err = piHeadOf(f, info.Size())
@@ -150,10 +152,11 @@ func readPiSession(path string, prev piRead) (piRead, bool) {
 				if ts := piRecordTime(head.Timestamp); ts > out.TurnAt {
 					out.TurnAt = ts
 				}
-				// The record is the last one, so a question in it has no answer yet, and its
-				// head is all spark can read of a record too large for the window
+				// A question in it has no answer yet, and its head is all spark can read of a
+				// record too large for the window. It is only a fallback: the complete
+				// records after it, if there are any, are newer and say more
 				if head.Asks {
-					out.LastEvent, gotEvent = AwaitingUser, true
+					salvaged, hasSalvaged = AwaitingUser, true
 				}
 			}
 		}
@@ -183,6 +186,9 @@ func readPiSession(path string, prev piRead) (piRead, bool) {
 				gotEvent = true
 			}
 		}
+	}
+	if !gotEvent && hasSalvaged {
+		out.LastEvent = salvaged
 	}
 	name, nameAt := piNameAt(f, prev.nameAt, info.Size(), prev.name)
 	// A name, including the empty one pi writes to clear it, wins over the first user message

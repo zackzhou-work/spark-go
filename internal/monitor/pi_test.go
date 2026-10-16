@@ -668,3 +668,28 @@ func TestReadPiSessionReadsAHugeFirstUserMessage(t *testing.T) {
 		t.Errorf("title is %d runes, want 120 and an ellipsis: %q", n, session.Title)
 	}
 }
+
+// The salvaged record is the one the window cut through, so a complete message after it is
+// newer and has to win: an old question must not label a later approval
+func TestPiTurnEventPrefersACompleteRecordOverTheSalvagedOne(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	base := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	huge := strings.Repeat("context ", 12_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+base.Format(time.RFC3339Nano)+`","message":{"role":"user","content":"ask me"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+base.Add(time.Second).Format(time.RFC3339Nano)+`","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"ask_user_question","arguments":{"note":"`+huge+`"}}]}}`+"\n"+
+			`{"type":"message","id":"m3","timestamp":"`+base.Add(2*time.Second).Format(time.RFC3339Nano)+`","message":{"role":"user","content":"go on"}}`+"\n")
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	if session.LastEvent == AwaitingUser {
+		t.Error("the answered question is behind the window, and the newer message is what stands")
+	}
+	if got := piWaitReason(session, piLive{Status: piBlocked}); got != WaitPermission {
+		t.Errorf("wait reason = %v, want an approval", got)
+	}
+}

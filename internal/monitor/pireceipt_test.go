@@ -198,3 +198,29 @@ func TestReadPiReceiptsChecksTheProcessBehindThePid(t *testing.T) {
 		t.Error("a receipt with no start time is believed")
 	}
 }
+
+func TestPiExtensionOnDiskTellsTheThreeStates(t *testing.T) {
+	home := t.TempDir()
+	if got := PiExtensionOnDisk(home); got != PiExtensionAbsent {
+		t.Errorf("a fresh home = %v, want absent", got)
+	}
+	path := PiExtensionPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("// what an older release installed\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := PiExtensionOnDisk(home); got != PiExtensionOutdated {
+		t.Errorf("an older file = %v, want outdated", got)
+	}
+	if PiExtensionInstalled(home) {
+		t.Error("an outdated copy is not installed as far as spark is concerned")
+	}
+	if err := InstallPiExtension(home); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got := PiExtensionOnDisk(home); got != PiExtensionCurrent {
+		t.Errorf("after installing = %v, want current", got)
+	}
+}

@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"os"
@@ -27,11 +28,34 @@ func InstallPiExtension(home string) error {
 	return os.WriteFile(path, piExtension, 0o644)
 }
 
-// PiExtensionInstalled reports whether the file is in place. It doesn't check what the
-// file says, so an outdated copy still counts as installed
+// PiExtensionState is what is on disk: nothing, a copy from an older release, or the one this
+// build installs
+type PiExtensionState int
+
+const (
+	// PiExtensionAbsent: nothing has been installed
+	PiExtensionAbsent PiExtensionState = iota
+	// PiExtensionOutdated: an older release's copy is in place. Reloading pi would load that
+	// same file, so spark has to offer to write the current one
+	PiExtensionOutdated
+	PiExtensionCurrent
+)
+
+func PiExtensionOnDisk(home string) PiExtensionState {
+	content, err := os.ReadFile(PiExtensionPath(home))
+	switch {
+	case err != nil:
+		return PiExtensionAbsent
+	case bytes.Equal(content, piExtension):
+		return PiExtensionCurrent
+	default:
+		return PiExtensionOutdated
+	}
+}
+
+// PiExtensionInstalled reports whether the current file is in place
 func PiExtensionInstalled(home string) bool {
-	info, err := os.Stat(PiExtensionPath(home))
-	return err == nil && info.Mode().IsRegular()
+	return PiExtensionOnDisk(home) == PiExtensionCurrent
 }
 
 // PiInstalledAt is when the extension file was last written, which is the moment a receipt has
