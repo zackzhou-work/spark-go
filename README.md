@@ -151,7 +151,7 @@ pi loads plain TypeScript from that directory, so this is the whole install; not
 
 It reports what pi already knows — the turn's state, what a blocking dialog is asking for, and the time of your last input — so a session in an IDE or a terminal shows up as working, blocked or idle even when Herdr isn't involved.
 
-The file carries no version, so an older copy still counts as installed and won't be offered again: delete `~/.pi/agent/extensions/spark-pi.ts` and press the button to refresh it.
+spark compares the installed file with the one it ships: a copy from an older release is offered again, and the banner says what is left until a session reports from the current one.
 
 ## Development
 

@@ -190,7 +190,7 @@ func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
 
 	// A receipt from a session still running an older extension says nothing about the new
 	// one, however recently it was rewritten
-	writeReceiptForTest(t, home, "old.json", 0)
+	writeReceiptForTest(t, home, "old.json", "another-install")
 	a.applyPiSetup(readSideState(home))
 	tt.Frame()
 	if !tt.HasText("One more step for pi") {
@@ -198,7 +198,7 @@ func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
 	}
 
 	// One from the payload this build installs means a pi process loaded it
-	writeReceiptForTest(t, home, "fresh.json", 1)
+	writeReceiptForTest(t, home, "fresh.json", monitor.PiInstalledID(home))
 	a.applyPiSetup(readSideState(home))
 	tt.Frame()
 	if tt.HasText("One more step for pi") {
@@ -207,15 +207,15 @@ func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
 	_ = installedAt
 }
 
-// writeReceiptForTest puts a receipt with a chosen payload version in the pi directory
-func writeReceiptForTest(t *testing.T, home, name string, payload int) string {
+// writeReceiptForTest puts a receipt in the pi directory, from a chosen install
+func writeReceiptForTest(t *testing.T, home, name, install string) string {
 	t.Helper()
 	dir := monitor.PiReceiptDir(home)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	path := filepath.Join(dir, name)
-	body := fmt.Sprintf(`{"payload":%d,"sessionId":"x","pid":%d}`, payload, os.Getpid())
+	body := fmt.Sprintf(`{"install":%q,"sessionId":"x","pid":%d}`, install, os.Getpid())
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestTodayNoticePointsAtThePiReload(t *testing.T) {
 	}
 
 	// And a session reporting afterwards takes it away for good
-	writeReceiptForTest(t, home, "fresh.json", 1)
+	writeReceiptForTest(t, home, "fresh.json", monitor.PiInstalledID(home))
 	a.applyPiSetup(readSideState(home))
 	tt.Frame()
 	if tt.HasText("need /reload or a restart") {

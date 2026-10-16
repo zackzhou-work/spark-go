@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -25,7 +26,11 @@ func InstallPiExtension(home string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, piExtension, 0o644)
+	// Each install gets its own identity, so a session that loaded the previous copy can be
+	// told apart from one that loaded this one
+	id := strconv.FormatInt(time.Now().UnixNano(), 36)
+	content := bytes.Replace(piExtension, []byte(piInstallMarker), []byte(id), 1)
+	return os.WriteFile(path, content, 0o644)
 }
 
 // PiExtensionState is what is on disk: nothing, a copy from an older release, or the one this
@@ -46,7 +51,7 @@ func PiExtensionOnDisk(home string) PiExtensionState {
 	switch {
 	case err != nil:
 		return PiExtensionAbsent
-	case bytes.Equal(content, piExtension):
+	case bytes.Equal(withoutInstallID(content), piExtension):
 		return PiExtensionCurrent
 	default:
 		return PiExtensionOutdated
@@ -68,11 +73,51 @@ func PiInstalledAt(home string) time.Time {
 	return info.ModTime()
 }
 
-// PiReported reports whether a pi process is running this version of the extension. pi loads
-// extensions when it starts, so the file on disk is not enough: a session still running an
-// older copy keeps rewriting its own receipt, which is why the receipt's payload version is
-// what counts rather than when anything was written
+// piInstallMarker is the identity the shipped extension carries. Installing replaces it, so
+// the file on disk says which copy it is and a session reports the same value back
+const piInstallMarker = "__SPARK_INSTALL__"
+
+// PiInstalledID is the identity of the installed extension, which is the marker itself when the
+// file was copied rather than installed
+func PiInstalledID(home string) string {
+	content, err := os.ReadFile(PiExtensionPath(home))
+	if err != nil {
+		return ""
+	}
+	return extensionID(content)
+}
+
+// extensionID reads the identity out of an extension file
+func extensionID(content []byte) string {
+	_, rest, found := bytes.Cut(content, []byte("const INSTALL_ID = \""))
+	if !found {
+		return ""
+	}
+	id, _, found := bytes.Cut(rest, []byte("\""))
+	if !found {
+		return ""
+	}
+	return string(id)
+}
+
+// withoutInstallID is the file with its identity blanked, so two copies of the same extension
+// compare equal whatever identity each was installed with
+func withoutInstallID(content []byte) []byte {
+	id := extensionID(content)
+	if id == "" {
+		return content
+	}
+	return bytes.Replace(content, []byte(id), []byte(piInstallMarker), 1)
+}
+
+// PiReported reports whether a pi process is running the extension that is installed now. pi
+// loads extensions when it starts, so the file on disk is not enough: a session still running
+// the previous copy keeps rewriting its own receipt
 func PiReported(home string) bool {
+	want := PiInstalledID(home)
+	if want == "" {
+		return false
+	}
 	entries, err := os.ReadDir(PiReceiptDir(home))
 	if err != nil {
 		return false
@@ -89,7 +134,7 @@ func PiReported(home string) bool {
 		if json.Unmarshal(content, &r) != nil {
 			continue
 		}
-		if r.Payload >= piReceiptPayload {
+		if r.Install == want {
 			return true
 		}
 	}

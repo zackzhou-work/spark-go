@@ -71,7 +71,8 @@ console.log(line("settled"));
 
 // A heartbeat has to refresh the file without changing what it says, or a session sitting on
 // one state looks like a process that died
-console.log("payload: " + ((JSON.parse(readFileSync(file, "utf8")).payload ?? 0) > 0));
+const body = JSON.parse(readFileSync(file, "utf8"));
+console.log("install: " + body.install);
 console.log("started: " + ((JSON.parse(readFileSync(file, "utf8")).startedAtMs ?? 0) > 0 && Date.now() - JSON.parse(readFileSync(file, "utf8")).startedAtMs < 600000));
 const before = readFileSync(file, "utf8");
 await new Promise((r) => setTimeout(r, 900));
@@ -124,7 +125,7 @@ func TestPiExtensionReportsItsState(t *testing.T) {
 		"closed: working kind=- tool=- input=false",
 		"typed: working kind=- tool=- input=true",
 		"settled: idle kind=- tool=- input=true",
-		"payload: true",
+		"install: " + InstalledIDForTest(t, home),
 		"started: true",
 		"heartbeat: true",
 		// A reload hands the session to a fresh instance, so the state stays where it was
@@ -140,4 +141,14 @@ func TestPiExtensionReportsItsState(t *testing.T) {
 			t.Errorf("line %d = %q, want %q", i+1, strings.TrimSpace(got[i]), want[i])
 		}
 	}
+}
+
+// InstalledIDForTest is the identity the installer wrote into this home's copy
+func InstalledIDForTest(t *testing.T, home string) string {
+	t.Helper()
+	id := PiInstalledID(home)
+	if id == "" {
+		t.Fatal("the installed extension carries no identity")
+	}
+	return id
 }

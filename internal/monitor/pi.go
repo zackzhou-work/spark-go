@@ -347,6 +347,12 @@ func piRecordHeadIn(buf []byte) (piRecordHead, bool) {
 			} else {
 				depth--
 			}
+			// Descending into a value ends the key that introduced it, and leaving the record
+			// ends the walk: what follows is another record, and its fields are not this one's
+			expecting = ""
+			if depth == 0 {
+				return out, true
+			}
 		default:
 			expecting = ""
 		}

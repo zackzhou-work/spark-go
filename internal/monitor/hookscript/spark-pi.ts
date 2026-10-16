@@ -22,9 +22,11 @@ const FLUSH_MS = 700;
 // variable exists so the test can watch a beat without waiting five minutes
 const HEARTBEAT_MS = Number(process.env.SPARK_PI_HEARTBEAT_MS) || 5 * 60 * 1000;
 const ASK_TOOL = "ask_user_question";
-// Bump this whenever what is reported below changes. Spark reads it to tell a session that
-// loaded this file from one still running an older copy, whose receipts keep arriving
-const PAYLOAD = 1;
+// The identity of the copy that is running. Spark replaces this when it installs the file and
+// compares what a session reports with what is on disk, which is what tells a session that
+// loaded the current copy from one still running an older one. A runtime cannot read its own
+// source reliably, so the identity has to be written into it
+const INSTALL_ID = "__SPARK_INSTALL__";
 
 type Block = { key: string; kind: string; tool: string };
 
@@ -61,7 +63,7 @@ export default function (pi: any): void {
     // this is the heartbeat saying the process is still here
     if (!force && key === lastKey) return;
     const body = JSON.stringify({
-      payload: PAYLOAD,
+      install: INSTALL_ID,
       sessionId,
       sessionPath,
       pid: process.pid,

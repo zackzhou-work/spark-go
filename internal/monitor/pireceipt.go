@@ -30,10 +30,6 @@ const (
 	// How far a receipt's started-at may sit from the process table's answer: one is a
 	// millisecond clock and the other whole seconds
 	piStartedTolerance = 5
-	// The payload version the embedded extension reports; bump it with the file whenever what
-	// the extension sends changes, and spark can tell a session running the current one from
-	// one whose receipts keep arriving from before an update
-	piReceiptPayload = 1
 )
 
 // piLive is a live signal about one session: the extension's report on the pi process, or
@@ -51,8 +47,9 @@ type piLive struct {
 // PiReceipt is what the extension writes, one file per session. Each write replaces the
 // last, and the file's own mtime is the update time
 type PiReceipt struct {
-	// Payload is the version of the report, which the extension bumps when it changes
-	Payload     int    `json:"payload"`
+	// Install is the identity of the extension file that wrote this, which the installer
+	// writes into it
+	Install     string `json:"install"`
 	SessionID   string `json:"sessionId"`
 	SessionPath string `json:"sessionPath"`
 	PID         int    `json:"pid"`

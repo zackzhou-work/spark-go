@@ -84,10 +84,10 @@ func TestPrunePiReceiptsDropsFinishedSessionsOnly(t *testing.T) {
 	}
 }
 
-// A receipt is only proof that the extension was loaded if it came from the version this
-// build installs: a session still running an older copy keeps writing its own, on every state
-// change and on every heartbeat
-func TestPiReportedNeedsACurrentReceipt(t *testing.T) {
+// A receipt is proof that the extension was loaded only if it identifies the file this build
+// installs. A version number could not: a locally modified or freshly written file can carry
+// the same number while a running session still has the old one
+func TestPiReportedNeedsAReceiptFromThisExtension(t *testing.T) {
 	home := t.TempDir()
 	if PiReported(home) {
 		t.Error("nothing has reported in a fresh home")
@@ -99,23 +99,42 @@ func TestPiReportedNeedsACurrentReceipt(t *testing.T) {
 	if PiReported(home) {
 		t.Error("an empty directory is not a report")
 	}
-	if err := os.WriteFile(filepath.Join(dir, "old.json"), []byte(`{"payload":0}`), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	// The install this test stands in for
+	home = t.TempDir()
+	if err := InstallPiExtension(home); err != nil {
+		t.Fatalf("install: %v", err)
 	}
-	if PiReported(home) {
-		t.Error("a receipt from an older extension says nothing about this one")
+	dir = PiReceiptDir(home)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte("not json"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	current := PiInstalledID(home)
+	if current == "" {
+		t.Fatal("the installed file carries no identity")
 	}
-	if PiReported(home) {
-		t.Error("an unreadable receipt is not a report")
+
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"another install", `{"install":"0123456789abcdef"}`, false},
+		{"no identity at all", `{}`, false},
+		{"an older extension", `{"payload":1}`, false},
+		{"this install", `{"install":"` + current + `"}`, true},
+		{"not json", `not json`, false},
 	}
-	if err := os.WriteFile(filepath.Join(dir, "fresh.json"), []byte(`{"payload":1}`), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if !PiReported(home) {
-		t.Error("a receipt from the current payload is a report")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(dir, "r.json")
+			if err := os.WriteFile(path, []byte(c.body), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			defer os.Remove(path)
+			if got := PiReported(home); got != c.want {
+				t.Errorf("PiReported = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 
