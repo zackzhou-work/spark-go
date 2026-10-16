@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // writePiSession lays out a pi session file tree: <root>/--<cwd>--/<name>.jsonl
@@ -622,5 +623,33 @@ func TestReadPiSessionReadsAHugeFinalRecord(t *testing.T) {
 	}
 	if session.ActivityAt != want {
 		t.Errorf("activity = %s, want %s", time.UnixMilli(session.ActivityAt), time.UnixMilli(want))
+	}
+}
+
+// The first user message can be larger than the head window -- a pasted log does it -- and it
+// is where the title comes from, so a window that stops inside that record has to read on
+func TestReadPiSessionReadsAHugeFirstUserMessage(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+	pasted := strings.Repeat("context ", 20_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+stamp+`","message":{"role":"user","content":"`+pasted+"\\n\\nnow do the thing"+`"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+stamp+`","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}`+"\n")
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	// The header is read from the same window, so it has to come through as well
+	if session.ID != "abc" || session.Cwd != cwd {
+		t.Errorf("identity = %q in %q", session.ID, session.Cwd)
+	}
+	if !strings.HasPrefix(session.Title, "context context") {
+		t.Errorf("title = %q, want the pasted prompt", session.Title)
+	}
+	if n := utf8.RuneCountInString(session.Title); n != 121 {
+		t.Errorf("title is %d runes, want 120 and an ellipsis: %q", n, session.Title)
 	}
 }

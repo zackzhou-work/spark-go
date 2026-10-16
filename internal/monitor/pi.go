@@ -81,22 +81,32 @@ type piRecord struct {
 // ReadPiSession reads both ends of a session file: identity and the first user message from
 // the head, the turn's standing and the timestamps from the tail
 func ReadPiSession(path string) (PiSession, bool) {
-	read, ok := readPiSession(path, 0, "")
+	read, ok := readPiSession(path, piRead{})
 	return read.session, ok
 }
 
-// piRead is what one read of a session file found. name is the session's own name, empty
-// when it has none, and nameAt is the offset the search for it reached
+// piHead is the part of a session file that never changes: its id, its working directory and
+// the title its first user message gives it
+type piHead struct {
+	id    string
+	cwd   string
+	title string
+}
+
+// piRead is what one read of a session file found. head is what the file says about itself,
+// name is the session's own name, empty when it has none, and nameAt is the offset the search
+// for that name reached
 type piRead struct {
 	session PiSession
+	head    piHead
 	name    string
 	nameAt  int64
 }
 
-// readPiSession reads one session file. nameFrom and name are what an earlier read already
-// covered for the session's own name, so a file that only grew is searched from where that
-// read stopped; pass 0 and "" for a first read
-func readPiSession(path string, nameFrom int64, name string) (piRead, bool) {
+// readPiSession reads one session file. prev is what an earlier read of it found, so a file
+// that only grew can keep what never changes and resume the search for its name; pass an
+// empty piRead for a first read
+func readPiSession(path string, prev piRead) (piRead, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return piRead{}, false
@@ -110,30 +120,14 @@ func readPiSession(path string, nameFrom int64, name string) (piRead, bool) {
 	// Activity comes from the newest entry the tail shows, falling back to the file's own
 	// time only when nothing in it parses
 	out := PiSession{Path: path}
-
-	head, err := readAt(f, 0, min(info.Size(), piHeadBytes))
-	if err != nil {
-		return piRead{}, false
-	}
-	headLines := piLines(head, info.Size() > piHeadBytes)
-	if len(headLines) == 0 {
-		return piRead{}, false
-	}
-	if header, ok := decodePiRecord(headLines[0]); ok {
-		out.ID = header.ID
-		out.Cwd = header.Cwd
-	}
-	// The first user message names the session unless the user gave it one of their own
-	for _, line := range headLines[1:] {
-		r, ok := decodePiRecord(line)
-		if !ok || r.Message == nil || r.Message.Role != "user" {
-			continue
-		}
-		if title := piUserTitle(piMessageText(r.Message.Content)); title != "" {
-			out.Title = title
-			break
+	head := prev.head
+	if head.id == "" {
+		head, err = piHeadOf(f, info.Size())
+		if err != nil {
+			return piRead{}, false
 		}
 	}
+	out.ID, out.Cwd = head.id, head.cwd
 
 	start := max(info.Size()-piTailBytes, 0)
 	tail, err := readAt(f, start, info.Size()-start)
@@ -183,16 +177,57 @@ func readPiSession(path string, nameFrom int64, name string) (piRead, bool) {
 			}
 		}
 	}
-	found, nameAt := piNameAt(f, nameFrom, info.Size(), name)
-	if found != "" {
-		out.Title = found
+	name, nameAt := piNameAt(f, prev.nameAt, info.Size(), prev.name)
+	// A name, including the empty one pi writes to clear it, wins over the first user message
+	out.Title = head.title
+	if name != "" {
+		out.Title = name
 	}
 	if out.ActivityAt == 0 {
 		out.ActivityAt = info.ModTime().UnixMilli()
 	}
-	// The name has to come back with the session: the next read resumes from nameAt and can
-	// only keep what this one keeps
-	return piRead{session: out, name: found, nameAt: nameAt}, true
+	return piRead{session: out, head: head, name: name, nameAt: nameAt}, true
+}
+
+// piHeadOf reads a session file's header and its first user message. That message can be
+// larger than the window -- a pasted prompt or a long injected context does it -- and a window
+// that stops inside it hides the title, so it is read further until the window ends on a
+// record boundary. What it answers never changes afterwards, so it is read once per session
+func piHeadOf(f *os.File, size int64) (piHead, error) {
+	window := min(size, piHeadBytes)
+	var head []byte
+	for {
+		buf, err := readAt(f, 0, window)
+		if err != nil {
+			return piHead{}, err
+		}
+		head = buf
+		if window >= size || window >= piMaxLineBytes || len(head) == 0 || head[len(head)-1] == '\n' {
+			break
+		}
+		window = min(window*2, size, piMaxLineBytes)
+	}
+
+	lines := piLines(head, window < size)
+	if len(lines) == 0 {
+		return piHead{}, nil
+	}
+	var out piHead
+	if header, ok := decodePiRecord(lines[0]); ok {
+		out.id, out.cwd = header.ID, header.Cwd
+	}
+	// The first user message names the session unless the user gave it one of their own
+	for _, line := range lines[1:] {
+		r, ok := decodePiRecord(line)
+		if !ok || r.Message == nil || r.Message.Role != "user" {
+			continue
+		}
+		if title := piUserTitle(piMessageText(r.Message.Content)); title != "" {
+			out.title = title
+			break
+		}
+	}
+	return out, nil
 }
 
 // piNameAt looks for the name the user gave the session, in [from, size) only. /name writes
@@ -447,11 +482,9 @@ func piLines(window []byte, truncated bool) [][]byte {
 type piCached struct {
 	modifiedMs int64
 	size       int64
-	// nameAt is how far the search for the session's own name has read, and name what it
-	// found; both carry over to the next read of a file that only grew
-	nameAt  int64
-	name    string
-	session PiSession
+	// read is what the file said, carried over to the next read of a file that only grew: the
+	// head of a session never changes, and the name search resumes where it stopped
+	read piRead
 }
 
 // readPiSession caches what a file said the last time it changed: a scan runs every few
@@ -461,30 +494,24 @@ func (s *Scanner) readPiSession(path string) (PiSession, bool) {
 	if err != nil {
 		return PiSession{}, false
 	}
-	if cached, ok := s.piCache[path]; ok && cached.modifiedMs == info.ModTime().UnixMilli() && cached.size == info.Size() {
-		return cached.session, true
+	cached, cachedOK := s.piCache[path]
+	if cachedOK && cached.modifiedMs == info.ModTime().UnixMilli() && cached.size == info.Size() {
+		return cached.read.session, true
 	}
-	// A file that only grew is resumed: a session being written to must not be searched
-	// from the top for a name every few seconds
-	prev := s.piCache[path]
-	from, name := int64(0), ""
-	if prev.nameAt > 0 && prev.nameAt <= info.Size() && info.Size() >= prev.size {
-		from, name = prev.nameAt, prev.name
+	// A file that only grew is resumed: a session being written to must not be read from the
+	// top, nor searched from the top for a name, every few seconds
+	prev := piRead{}
+	if cachedOK && cached.size > 0 && info.Size() >= cached.size && cached.read.nameAt <= info.Size() {
+		prev = cached.read
 	}
-	read, ok := readPiSession(path, from, name)
+	read, ok := readPiSession(path, prev)
 	if !ok {
 		return PiSession{}, false
 	}
 	if s.piCache == nil {
 		s.piCache = map[string]piCached{}
 	}
-	s.piCache[path] = piCached{
-		modifiedMs: info.ModTime().UnixMilli(),
-		size:       info.Size(),
-		nameAt:     read.nameAt,
-		name:       read.name,
-		session:    read.session,
-	}
+	s.piCache[path] = piCached{modifiedMs: info.ModTime().UnixMilli(), size: info.Size(), read: read}
 	return read.session, true
 }
 
