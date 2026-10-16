@@ -17,9 +17,10 @@ const (
 )
 
 const (
-	// A receipt older than this says nothing about a running process: a pi that has been
-	// idle for a day has no state left to report
-	piReceiptLiveWindow = 24 * time.Hour
+	// A receipt older than this says nothing about a running process. The extension writes
+	// on every change and every few minutes besides, so a file this stale belongs to a
+	// process that died, or to a pid that has since been reused
+	piReceiptLiveWindow = 7 * 24 * time.Hour
 	// Receipts for sessions whose process is long gone are deleted this long after their
 	// last update
 	piReceiptRetention = 30 * 24 * time.Hour
@@ -30,7 +31,10 @@ const (
 // piLive is a live signal about one session: the extension's report on the pi process, or
 // Herdr's view of the pane it runs in
 type piLive struct {
-	Status    string
+	Status string
+	// FromHerdr says the status is Herdr's, which distinguishes a finished turn the user has
+	// seen from one they haven't; the extension reports the same words without knowing that
+	FromHerdr bool
 	BlockKind string
 	Tool      string
 	PaneID    string

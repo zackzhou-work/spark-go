@@ -15,24 +15,24 @@ import (
 // unavailable so a scan never waits on it
 const herdrTimeout = 400 * time.Millisecond
 
+// Herdr's vocabulary has two words the extension never sends: a finished turn nobody has
+// looked at, and an agent Herdr cannot classify
+const (
+	herdrDone    = "done"
+	herdrUnknown = "unknown"
+)
+
 // HerdrAgent is the part of a Herdr pane's agent spark uses
 type HerdrAgent struct {
 	Agent  string
 	PaneID string
-	// Status is Herdr's own vocabulary: working, blocked, idle, done or unknown
+	// Status is Herdr's own vocabulary: working, blocked, idle, done or unknown. The
+	// extension reports the first three, and only Herdr tells a finished turn the user has
+	// seen (idle) from one they haven't (done)
 	Status      string
 	Focused     bool
 	SessionPath string
-	Cwd         string
 }
-
-// herdrStatuses are the states spark knows how to read
-const (
-	herdrWorking = "working"
-	herdrBlocked = "blocked"
-	herdrIdle    = "idle"
-	herdrDone    = "done"
-)
 
 // HerdrSocketPath is where the Herdr server listens. Spark dials it directly: the CLI
 // isn't needed, and its location depends on how Herdr was installed

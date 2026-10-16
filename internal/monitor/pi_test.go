@@ -188,12 +188,14 @@ func TestPiSessionStateNeedsALiveSignal(t *testing.T) {
 		{name: "idle since before the user looked", session: endedEarlier, live: piLive{Status: piIdle}, ok: true, lastSeen: now - 60_000, now: now, want: Completed},
 		{name: "idle and watched", session: ended, live: piLive{Status: piIdle}, ok: true, lastSeen: now, now: now, want: Completed},
 		{name: "exited and unseen", session: ended, live: piLive{Status: piExited}, ok: true, now: now, want: Unread},
-		// A Herdr pane can be focused at any time, so its badge waits for that
-		{name: "unseen in a pane, long after", session: endedEarly, live: piLive{Status: piIdle, PaneID: "w4:pC"}, ok: true, now: now, want: Unread},
+		// Herdr says nobody has looked at this one, however long ago it finished
+		{name: "herdr done", session: endedEarly, live: piLive{Status: herdrDone, FromHerdr: true, PaneID: "w4:pC"}, ok: true, now: now, want: Unread},
+		// Herdr says the tab has been seen, so its idle is a session the user has read
+		{name: "herdr idle", session: endedEarly, live: piLive{Status: piIdle, FromHerdr: true, PaneID: "w4:pC"}, ok: true, now: now, want: Completed},
 		// Nothing can report the user looking at a session in an IDE or a plain terminal, so
 		// its badge fades instead of hanging on
-		{name: "unseen and faded", session: endedEarly, live: piLive{Status: piIdle}, ok: true, now: now, want: Completed},
-		{name: "unseen and still fresh", session: endedSoon, live: piLive{Status: piIdle}, ok: true, now: now, want: Unread},
+		{name: "the extension's idle and faded", session: endedEarly, live: piLive{Status: piIdle}, ok: true, now: now, want: Completed},
+		{name: "the extension's idle and fresh", session: endedSoon, live: piLive{Status: piIdle}, ok: true, now: now, want: Unread},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -333,63 +335,48 @@ func serveHerdr(t *testing.T, path, reply string) {
 	}()
 }
 
-// A turn that finished in a Herdr pane is new only if the user hasn't been back since. The
-// first run has nothing to compare against, so it adopts what it finds instead of calling
-// every session ever finished new
-func TestScanPiReadsHerdrAndOnlyReportsWhatHappensAfterTheFirstRun(t *testing.T) {
-	root := t.TempDir()
+// Herdr is the only source that can say whether a finished turn has been looked at, so its
+// word decides: done is work nobody has seen, idle is work somebody has
+func TestScanPiTakesHerdrsWordForUnseenWork(t *testing.T) {
 	cwd := "/Users/me/work/spark-go"
-	path := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_session.jsonl",
-		piHeader("session", cwd)+
-			`{"type":"message","id":"m1","timestamp":"2026-10-15T10:00:05.000Z","message":{"role":"user","content":"start a turn"}}`+"\n"+
-			`{"type":"message","id":"m2","timestamp":"2026-10-15T10:00:09.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}`+"\n")
+	cases := []struct {
+		status   string
+		want     TaskState
+		noSignal bool
+	}{
+		{"working", Running, false},
+		{"done", Unread, false},
+		{"idle", Completed, false},
+		// An agent Herdr cannot classify is not proof that the work finished
+		{"unknown", Completed, true},
+	}
+	for _, c := range cases {
+		t.Run(c.status, func(t *testing.T) {
+			root := t.TempDir()
+			path := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_session.jsonl",
+				piHeader("session", cwd)+
+					`{"type":"message","id":"m1","timestamp":"2026-10-15T10:00:05.000Z","message":{"role":"user","content":"start a turn"}}`+"\n"+
+					`{"type":"message","id":"m2","timestamp":"2026-10-15T10:00:09.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}`+"\n")
+			socket := shortSocketPath(t)
+			serveHerdr(t, socket, `{"id":"spark","result":{"type":"agent_list","agents":[{"agent":"pi","pane_id":"w4:pC",`+
+				`"agent_status":"`+c.status+`","focused":false,"agent_session":{"kind":"path","value":"`+path+`"}}]}}`)
 
-	socket := shortSocketPath(t)
-	serveHerdr(t, socket, `{"id":"spark","result":{"type":"agent_list","agents":[{"agent":"pi","pane_id":"w4:pC",`+
-		`"agent_status":"idle","focused":false,"agent_session":{"kind":"path","value":"`+path+`"}}]}}`)
-
-	// A store that already exists: nothing has recorded the user looking at this session
-	seenPath := filepath.Join(root, "pi-seen.json")
-	if err := os.WriteFile(seenPath, []byte(`{}`), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	s := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: socket, piSeen: NewPiSeen(seenPath)}
-	found := s.scanPi(time.Now())
-	if len(found) != 1 {
-		t.Fatalf("found %d sessions: %+v", len(found), found)
-	}
-	if found[0].item.State != Unread {
-		t.Errorf("state = %v, want Unread for a turn the user hasn't looked at", found[0].item.State)
-	}
-	if found[0].item.Pane != "w4:pC" || found[0].item.NoSignal {
-		t.Errorf("Herdr's pane should carry the row: %+v", found[0].item)
-	}
-
-	// The first run has no history: it takes what it finds as read
-	fresh := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: socket,
-		piSeen: NewPiSeen(filepath.Join(root, "fresh.json"))}
-	found = fresh.scanPi(time.Now())
-	if len(found) != 1 {
-		t.Fatalf("found %d sessions: %+v", len(found), found)
-	}
-	if found[0].item.State != Completed {
-		t.Errorf("state = %v, want Completed on the first look", found[0].item.State)
-	}
-
-	// A turn that finishes after the baseline is new. That only holds while the first look
-	// stays a one-off: a store that kept answering yes would mark every session seen on
-	// every scan, and nothing could ever be unread. The pause puts the new entry after the
-	// baseline's own millisecond, which is the whole distinction being tested
-	time.Sleep(5 * time.Millisecond)
-	appendPiLine(t, path, `{"type":"message","id":"m3","timestamp":"`+
-		time.Now().UTC().Format(time.RFC3339Nano)+
-		`","message":{"role":"assistant","content":[{"type":"text","text":"later"}],"stopReason":"stop"}}`)
-	found = fresh.scanPi(time.Now())
-	if len(found) != 1 {
-		t.Fatalf("found %d sessions: %+v", len(found), found)
-	}
-	if found[0].item.State != Unread {
-		t.Errorf("state = %v, want Unread for a turn that finished after the first look", found[0].item.State)
+			s := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: socket}
+			found := s.scanPi(time.Now())
+			if len(found) != 1 {
+				t.Fatalf("found %d sessions: %+v", len(found), found)
+			}
+			item := found[0].item
+			if item.State != c.want {
+				t.Errorf("state = %v, want %v", item.State, c.want)
+			}
+			if item.NoSignal != c.noSignal {
+				t.Errorf("no signal = %v, want %v", item.NoSignal, c.noSignal)
+			}
+			if item.Pane != "w4:pC" {
+				t.Errorf("pane = %q, want the pane Herdr reports", item.Pane)
+			}
+		})
 	}
 }
 
@@ -429,7 +416,7 @@ func TestScanPiFadesTheBadgeOnASessionNothingReportsLooking(t *testing.T) {
 	writePiReceipt(t, receiptDir, "old.json", receipt("old", pathOld))
 	writePiReceipt(t, receiptDir, "recent.json", receipt("recent", pathRecent))
 
-	s := &Scanner{PiRoot: root, PiReceiptDir: receiptDir, HerdrSocket: filepath.Join(root, "missing.sock"), piSeen: NewPiSeen(filepath.Join(root, "seen.json"))}
+	s := &Scanner{PiRoot: root, PiReceiptDir: receiptDir, HerdrSocket: filepath.Join(root, "missing.sock")}
 	found := s.scanPi(now)
 	if len(found) != 2 {
 		t.Fatalf("found %d sessions: %+v", len(found), found)

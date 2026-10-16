@@ -68,6 +68,13 @@ await fire("input", { source: "interactive", text: "hi" });
 console.log(line("typed"));
 await fire("agent_settled", { aborted: false });
 console.log(line("settled"));
+
+// A heartbeat has to refresh the file without changing what it says, or a session sitting on
+// one state looks like a process that died
+const before = readFileSync(file, "utf8");
+await new Promise((r) => setTimeout(r, 900));
+const after = readFileSync(file, "utf8");
+console.log("heartbeat: " + (JSON.parse(after).state === JSON.parse(before).state && JSON.parse(after).updatedAtMs > JSON.parse(before).updatedAtMs));
 await fire("session_shutdown", { reason: "reload" }, false);
 console.log(line("reloaded"));
 await fire("session_shutdown", { reason: "quit" });
@@ -100,7 +107,7 @@ func TestPiExtensionReportsItsState(t *testing.T) {
 	}
 
 	cmd := exec.Command(bun, "run", harnessPath)
-	cmd.Env = append(os.Environ(), "HOME="+home)
+	cmd.Env = append(os.Environ(), "HOME="+home, "SPARK_PI_HEARTBEAT_MS=300")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("running the extension failed: %v\n%s", err, out)
@@ -115,6 +122,7 @@ func TestPiExtensionReportsItsState(t *testing.T) {
 		"closed: working kind=- tool=- input=false",
 		"typed: working kind=- tool=- input=true",
 		"settled: idle kind=- tool=- input=true",
+		"heartbeat: true",
 		// A reload hands the session to a fresh instance, so the state stays where it was
 		"reloaded: idle kind=- tool=- input=true",
 		"stopped: exited kind=- tool=- input=true",

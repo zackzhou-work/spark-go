@@ -62,7 +62,6 @@ type Scanner struct {
 	PiReceiptDir  string
 	HerdrSocket   string
 	cpu           *cpuSampler
-	piSeen        *PiSeen
 	piCache       map[string]piCached
 	herdrErrAt    time.Time
 	receiptPruned time.Time
@@ -84,7 +83,6 @@ func NewScanner() *Scanner {
 		PiReceiptDir: PiReceiptDir(home),
 		HerdrSocket:  HerdrSocketPath(home),
 		cpu:          newCPUSampler(),
-		piSeen:       NewPiSeen(PiSeenPath(home)),
 	}
 }
 
@@ -273,8 +271,7 @@ func (s *Scanner) ScanAll() []ProjectGroup {
 	found := s.scanClaude()
 	found = append(found, s.scanCodex(now)...)
 	found = append(found, s.scanPi(now)...)
-	// Only a scan can notice these: seen times it just observed, and receipts left behind
-	s.piSeen.Save(now)
+	// Only a scan notices the receipts left behind by pi processes that are gone
 	s.pruneReceipts(now)
 	return groupByProject(found)
 }

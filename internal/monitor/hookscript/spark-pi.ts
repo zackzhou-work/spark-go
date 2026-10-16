@@ -15,8 +15,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DIR = join(process.env.HOME || homedir(), ".config", "spark", "pi");
-// Writing on every keystroke would be silly, so state changes are folded together
+// State changes are folded together: a run of tool results is one state, not ten
 const FLUSH_MS = 700;
+// A session can sit on one state for days -- a prompt left open over a weekend -- and spark
+// treats an old file as a process that is gone, so say it is still here. The environment
+// variable exists so the test can watch a beat without waiting five minutes
+const HEARTBEAT_MS = Number(process.env.SPARK_PI_HEARTBEAT_MS) || 5 * 60 * 1000;
 const ASK_TOOL = "ask_user_question";
 
 type Block = { key: string; kind: string; tool: string };
@@ -32,36 +36,46 @@ export default function (pi: any): void {
   let lastInputAt = 0;
   let blocks: Block[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let lastWritten = "";
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let lastKey = "";
 
-  function payload(state?: string): string {
+  function currentState(): string {
     const block = blocks[0];
-    return JSON.stringify({
+    return block ? "blocked" : active ? "working" : "idle";
+  }
+
+  function flush(state?: string, force = false): void {
+    if (!usable || !sessionPath) return;
+    const block = blocks[0];
+    const effective = state ?? currentState();
+    const key = `${effective}|${block?.kind ?? ""}|${block?.tool ?? ""}|${lastInputAt}`;
+    // The turn state repeats on every tool result; only a change is worth a write, unless
+    // this is the heartbeat saying the process is still here
+    if (!force && key === lastKey) return;
+    const body = JSON.stringify({
       sessionId,
       sessionPath,
       pid: process.pid,
-      state: state ?? (block ? "blocked" : active ? "working" : "idle"),
+      state: effective,
       blockKind: block?.kind ?? "",
       tool: block?.tool ?? "",
       updatedAtMs: Date.now(),
       lastInputAtMs: lastInputAt,
     });
-  }
-
-  function flush(state?: string): void {
-    if (!usable || !sessionPath) return;
-    const body = payload(state);
-    // The turn state repeats on every tool result; only a real change is worth a write
-    if (body === lastWritten) return;
     const target = join(DIR, `${sessionId || sessionPath.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
     try {
       mkdirSync(DIR, { recursive: true });
       writeFileSync(`${target}.tmp`, body);
       renameSync(`${target}.tmp`, target);
-      lastWritten = body;
+      lastKey = key;
     } catch {
       // spark's own directory is best effort; failing to write must not disturb pi
     }
+  }
+
+  function stopHeartbeat(): void {
+    if (heartbeat) clearInterval(heartbeat);
+    heartbeat = undefined;
   }
 
   function later(): void {
@@ -96,8 +110,11 @@ export default function (pi: any): void {
     // A reload replaces this extension mid-turn without another agent_start, so ask pi
     active = ctx?.isIdle?.() === false;
     blocks = [];
-    lastWritten = "";
+    lastKey = "";
     flush();
+    stopHeartbeat();
+    heartbeat = setInterval(() => flush(undefined, true), HEARTBEAT_MS);
+    (heartbeat as any).unref?.();
   });
 
   pi.on("agent_start", () => {
@@ -144,8 +161,10 @@ export default function (pi: any): void {
   });
 
   pi.on("session_shutdown", (event: any) => {
+    // Whichever way the session ends, this instance stops reporting; a reload is followed by
+    // a fresh instance with its own heartbeat
+    stopHeartbeat();
     if (!usable) return;
-    // A reload is followed by a fresh instance for the same session, which reports again
     if (event?.reason === "reload") return;
     active = false;
     blocks = [];

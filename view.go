@@ -406,7 +406,11 @@ func (a *app) needsRow(c *ui.Context, p palette, card projectCard) {
 			ui.Text(c, card.group.ProjectName).SingleLine().FontSize(16).LineHeight(20.0 / 16).FontWeight(510)
 			ui.Text(c, waitLine(card.waiting.WaitReason)).SingleLine().FontSize(14).LineHeight(20.0 / 14).TextColor(p.sec)
 		})
-		a.respondButton(c, p, card.waiting, 32, 14).Shrink(0)
+		// A session spark can't open has nowhere for this button to go, so it isn't offered;
+		// the project page explains why
+		if card.waiting.Jumpable() {
+			a.respondButton(c, p, card.waiting, 32, 14).Shrink(0)
+		}
 	})
 }
 
@@ -424,7 +428,9 @@ func (a *app) needsStack(c *ui.Context, p palette, card projectCard) {
 				ui.Text(c, waitLine(card.waiting.WaitReason)).SingleLine().FontSize(13).LineHeight(18.0 / 13).TextColor(p.sec)
 			})
 		})
-		a.respondButton(c, p, card.waiting, 32, 13).FillWidth()
+		if card.waiting.Jumpable() {
+			a.respondButton(c, p, card.waiting, 32, 13).FillWidth()
+		}
 	})
 }
 

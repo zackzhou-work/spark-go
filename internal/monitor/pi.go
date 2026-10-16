@@ -370,17 +370,19 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 				continue
 			}
 
-			live, ok := signals.live[path]
-			if !ok {
-				live, ok = herdr[path]
+			// Herdr gets its status from the same events the extension reports, and only it
+			// knows whether the pane's tab has been looked at, so its word wins; the
+			// extension still supplies what a blocking dialog is asking for
+			receipt, hasReceipt := signals.live[path]
+			live, ok := receipt, hasReceipt
+			if host, hosted := herdr[path]; hosted && host.Status != herdrUnknown {
+				host.BlockKind, host.Tool = receipt.BlockKind, receipt.Tool
+				live, ok = host, true
 			}
-			// Which pane a session lives in decides whether the user can be seen looking at
-			// it, whoever reported its state
 			if live.PaneID == "" {
 				live.PaneID = herdr[path].PaneID
 			}
-			lastSeen := max(signals.seen[path], s.piSeen.Seen(path))
-			state, reason := piSessionState(session, live, ok, lastSeen, now.UnixMilli())
+			state, reason := piSessionState(session, live, ok, signals.seen[path], now.UnixMilli())
 
 			activityAt := timestampTime(session.ActivityAt)
 			item := SessionItem{
@@ -415,24 +417,23 @@ func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs, nowMs i
 		return Running, WaitPermission
 	case piBlocked:
 		return Waiting, piWaitReason(session, live)
+	case herdrDone:
+		// Herdr only says this for a turn that finished while its tab was unseen
+		return Unread, WaitPermission
+	case piIdle:
+		if live.FromHerdr {
+			// Same word, different evidence: Herdr marks a tab seen as soon as it is
+			// focused, so a session it reports as idle has been looked at
+			return Completed, WaitPermission
+		}
 	}
-	// idle, done or exited: the turn is over, so the question is whether the user has
-	// looked since it finished
-	if session.ActivityAt > lastSeenMs && piUnreadHolds(session, live, nowMs) {
+	// Only the extension is left, and it sees prompts rather than the user reading: those
+	// come before the turn ran, so the badge fades instead of waiting on someone who has
+	// walked away
+	if session.ActivityAt > lastSeenMs && nowMs-session.ActivityAt < piUnreadWindow.Milliseconds() {
 		return Unread, WaitPermission
 	}
 	return Completed, WaitPermission
-}
-
-// piUnreadHolds decides whether an unseen turn is still worth a New badge. A session in a
-// Herdr pane can have it cleared at any time, because focusing that pane is reported; a
-// session in an IDE or a plain terminal has only submitted prompts to go on, and those come
-// before the turn ran, so the badge fades instead of waiting for the user to come back
-func piUnreadHolds(session PiSession, live piLive, nowMs int64) bool {
-	if live.PaneID != "" {
-		return true
-	}
-	return nowMs-session.ActivityAt < piUnreadWindow.Milliseconds()
 }
 
 // piWaitReason tells an answer from an approval. The extension reports which dialog is up;
@@ -469,18 +470,11 @@ func (s *Scanner) herdrAgents(now time.Time) map[string]piLive {
 		return nil
 	}
 	out := make(map[string]piLive, len(agents))
-	// With nothing recorded yet there is no way to tell a session the user has read from one
-	// they haven't, so the first look takes what it finds as read and only what happens after
-	// it can be unread
-	first := s.piSeen.FirstLook()
 	for _, a := range agents {
 		if a.SessionPath == "" {
 			continue
 		}
-		if a.Focused || first {
-			s.piSeen.Mark(a.SessionPath, now.UnixMilli())
-		}
-		out[a.SessionPath] = piLive{Status: a.Status, PaneID: a.PaneID}
+		out[a.SessionPath] = piLive{Status: a.Status, PaneID: a.PaneID, FromHerdr: true}
 	}
 	return out
 }
