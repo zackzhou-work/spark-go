@@ -24,7 +24,6 @@ const (
 
 // HerdrAgent is the part of a Herdr pane's agent spark uses
 type HerdrAgent struct {
-	Agent  string
 	PaneID string
 	// Status is Herdr's own vocabulary: working, blocked, idle, done or unknown. The
 	// extension reports the first three, and only Herdr tells a finished turn the user has
@@ -111,7 +110,6 @@ func (c HerdrClient) Agents() ([]HerdrAgent, error) {
 			continue
 		}
 		out = append(out, HerdrAgent{
-			Agent:       a.Agent,
 			PaneID:      a.PaneID,
 			Status:      a.Status,
 			Focused:     a.Focused,

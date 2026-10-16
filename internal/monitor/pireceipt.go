@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
-// The extension reports the same three states Herdr does, plus exited for a pi process
-// that is going away, so spark reads a session without caring where the signal came from
+// The extension reports the same three states Herdr does, plus exited for a pi process that is
+// going away. exited needs no case of its own in the state rules: a session whose process is
+// gone takes the same path as an idle one, where an unseen turn is still new
 const (
 	piWorking = "working"
 	piBlocked = "blocked"
