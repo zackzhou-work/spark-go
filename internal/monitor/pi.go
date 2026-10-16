@@ -79,23 +79,30 @@ type piRecord struct {
 // ReadPiSession reads both ends of a session file: identity and the first user message from
 // the head, the turn's standing and the timestamps from the tail
 func ReadPiSession(path string) (PiSession, bool) {
-	session, _, ok := readPiSession(path, 0, "")
-	return session, ok
+	read, ok := readPiSession(path, 0, "")
+	return read.session, ok
+}
+
+// piRead is what one read of a session file found. name is the session's own name, empty
+// when it has none, and nameAt is the offset the search for it reached
+type piRead struct {
+	session PiSession
+	name    string
+	nameAt  int64
 }
 
 // readPiSession reads one session file. nameFrom and name are what an earlier read already
 // covered for the session's own name, so a file that only grew is searched from where that
-// read stopped; pass 0 and "" for a first read. It answers the offset the name search
-// reached, which is where the next read resumes
-func readPiSession(path string, nameFrom int64, name string) (PiSession, int64, bool) {
+// read stopped; pass 0 and "" for a first read
+func readPiSession(path string, nameFrom int64, name string) (piRead, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return PiSession{}, nameFrom, false
+		return piRead{}, false
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return PiSession{}, nameFrom, false
+		return piRead{}, false
 	}
 
 	// Activity comes from the newest entry the tail shows, falling back to the file's own
@@ -104,11 +111,11 @@ func readPiSession(path string, nameFrom int64, name string) (PiSession, int64, 
 
 	head, err := readAt(f, 0, min(info.Size(), piHeadBytes))
 	if err != nil {
-		return PiSession{}, nameFrom, false
+		return piRead{}, false
 	}
 	headLines := piLines(head, info.Size() > piHeadBytes)
 	if len(headLines) == 0 {
-		return PiSession{}, nameFrom, false
+		return piRead{}, false
 	}
 	if header, ok := decodePiRecord(headLines[0]); ok {
 		out.ID = header.ID
@@ -129,7 +136,7 @@ func readPiSession(path string, nameFrom int64, name string) (PiSession, int64, 
 	start := max(info.Size()-piTailBytes, 0)
 	tail, err := readAt(f, start, info.Size()-start)
 	if err != nil {
-		return PiSession{}, nameFrom, false
+		return piRead{}, false
 	}
 	tailLines := piLines(tail, false)
 	if start > 0 && len(tailLines) > 0 {
@@ -161,14 +168,16 @@ func readPiSession(path string, nameFrom int64, name string) (PiSession, int64, 
 			}
 		}
 	}
-	name, nameAt := piNameAt(f, nameFrom, info.Size(), name)
-	if name != "" {
-		out.Title = name
+	found, nameAt := piNameAt(f, nameFrom, info.Size(), name)
+	if found != "" {
+		out.Title = found
 	}
 	if out.ActivityAt == 0 {
 		out.ActivityAt = info.ModTime().UnixMilli()
 	}
-	return out, nameAt, true
+	// The name has to come back with the session: the next read resumes from nameAt and can
+	// only keep what this one keeps
+	return piRead{session: out, name: found, nameAt: nameAt}, true
 }
 
 // piNameAt looks for the name the user gave the session, in [from, size) only. /name writes
@@ -359,7 +368,7 @@ func (s *Scanner) readPiSession(path string) (PiSession, bool) {
 	if prev.nameAt > 0 && prev.nameAt <= info.Size() && info.Size() >= prev.size {
 		from, name = prev.nameAt, prev.name
 	}
-	session, nameAt, ok := readPiSession(path, from, name)
+	read, ok := readPiSession(path, from, name)
 	if !ok {
 		return PiSession{}, false
 	}
@@ -369,11 +378,11 @@ func (s *Scanner) readPiSession(path string) (PiSession, bool) {
 	s.piCache[path] = piCached{
 		modifiedMs: info.ModTime().UnixMilli(),
 		size:       info.Size(),
-		nameAt:     nameAt,
-		name:       name,
-		session:    session,
+		nameAt:     read.nameAt,
+		name:       read.name,
+		session:    read.session,
 	}
-	return session, true
+	return read.session, true
 }
 
 // scanPi turns recent pi sessions into sessions. Sub-agent sessions live in a directory
@@ -404,11 +413,18 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 			if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
 				continue
 			}
+			path := filepath.Join(root, dir.Name(), e.Name())
+			receipt, hasReceipt := signals.live[path]
+			host, hosted := herdr[path]
 			info, err := e.Info()
-			if err != nil || info.ModTime().Before(cutoff) {
+			if err != nil {
 				continue
 			}
-			path := filepath.Join(root, dir.Name(), e.Name())
+			// An old file is history, unless something still reports on the session: a
+			// prompt left open for a week writes nothing and is still waiting for an answer
+			if info.ModTime().Before(cutoff) && !hasReceipt && !hosted {
+				continue
+			}
 			session, ok := s.readPiSession(path)
 			if !ok || session.Cwd == "" {
 				continue
@@ -417,14 +433,13 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 			// Herdr gets its status from the same events the extension reports, and only it
 			// knows whether the pane's tab has been looked at, so its word wins; the
 			// extension still supplies what a blocking dialog is asking for
-			receipt, hasReceipt := signals.live[path]
 			live, ok := receipt, hasReceipt
-			if host, hosted := herdr[path]; hosted && host.Status != herdrUnknown {
+			if hosted && host.Status != herdrUnknown {
 				host.BlockKind, host.Tool = receipt.BlockKind, receipt.Tool
 				live, ok = host, true
 			}
 			if live.PaneID == "" {
-				live.PaneID = herdr[path].PaneID
+				live.PaneID = host.PaneID
 			}
 			state, reason := piSessionState(session, live, ok, signals.seen[path], now.UnixMilli())
 

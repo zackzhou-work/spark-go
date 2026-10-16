@@ -516,4 +516,44 @@ func TestScanPiFindsARenameInWhatWasAppended(t *testing.T) {
 	if got := title(); got != "Renamed again" {
 		t.Errorf("title = %q, want the newest rename", got)
 	}
+
+	// The name has to survive what comes after it: only the appended bytes are searched from
+	// here on, so the read that found the rename is the one that has to keep it
+	appendPiLine(t, path, `{"type":"message","id":"m4","timestamp":"`+stamp+`","message":{"role":"assistant","content":[{"type":"text","text":"later"}],"stopReason":"stop"}}`)
+	if got := title(); got != "Renamed again" {
+		t.Errorf("title = %q, want the name to outlive the next message", got)
+	}
+}
+
+// A session that hasn't written to its file in a week is history, but not while something
+// still reports on it: a prompt left open over a vacation writes nothing at all
+func TestScanPiKeepsASessionSomethingStillReports(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	stamp := time.Now().Add(-piScanWindow - 24*time.Hour).UTC().Format(time.RFC3339Nano)
+	path := writePiSession(t, root, cwd, "2026-10-01T10-00-00-000Z_old.jsonl",
+		piHeader("old", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+stamp+`","message":{"role":"user","content":"ask me something"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+stamp+`","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"ask_user_question","arguments":{}}]}}`+"\n")
+	old := time.Now().Add(-piScanWindow - 24*time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	receiptDir := filepath.Join(root, "receipts")
+	writePiReceipt(t, receiptDir, "old.json", `{"sessionId":"old","sessionPath":"`+path+`","pid":`+
+		strconv.Itoa(os.Getpid())+`,"state":"blocked","tool":"ask_user_question","updatedAtMs":`+
+		strconv.FormatInt(time.Now().UnixMilli(), 10)+`}`)
+
+	s := &Scanner{PiRoot: root, PiReceiptDir: receiptDir, HerdrSocket: filepath.Join(root, "missing.sock")}
+	found := s.scanPi(time.Now())
+	if len(found) != 1 {
+		t.Fatalf("found %d sessions, want the one still waiting: %+v", len(found), found)
+	}
+	if found[0].item.State != Waiting || found[0].item.WaitReason != WaitQuestion {
+		t.Errorf("state = %v/%v, want Waiting on a question", found[0].item.State, found[0].item.WaitReason)
+	}
+	if found[0].item.NoSignal {
+		t.Error("the extension is reporting on it, so the row doesn't claim it has no signal")
+	}
 }
