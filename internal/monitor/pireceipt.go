@@ -26,6 +26,9 @@ const (
 	piReceiptRetention = 30 * 24 * time.Hour
 	// Receipts are read every scan but only pruned this often
 	piReceiptPruneEvery = time.Hour
+	// How far a receipt's started-at may sit from the process table's answer: one is a
+	// millisecond clock and the other whole seconds
+	piStartedTolerance = 5
 )
 
 // piLive is a live signal about one session: the extension's report on the pi process, or
@@ -50,7 +53,10 @@ type PiReceipt struct {
 	BlockKind   string `json:"blockKind"`
 	Tool        string `json:"tool"`
 	UpdatedAtMs int64  `json:"updatedAtMs"`
-	LastInputMs int64  `json:"lastInputAtMs"`
+	// StartedAtMs is when the pi process started, which is what tells a reused pid from the
+	// process the receipt was written for
+	StartedAtMs int64 `json:"startedAtMs"`
+	LastInputMs int64 `json:"lastInputAtMs"`
 }
 
 // PiReceiptDir is where the extension writes its per-session files
@@ -76,6 +82,7 @@ func ReadPiReceipts(dir string) piReceipts {
 	}
 	nowMs := time.Now().UnixMilli()
 	alive := map[int]bool{}
+	var starts map[int]int64
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
@@ -103,11 +110,42 @@ func ReadPiReceipts(dir string) piReceipts {
 		if !processAliveCached(alive, r.PID) {
 			continue
 		}
+		if starts == nil {
+			starts = processStarts()
+		}
+		if !sameProcess(starts, r) {
+			// The pid answers, but not the process that wrote this: a crashed pi whose pid was
+			// reused. Its state is worthless, though its last input still counts as a look
+			continue
+		}
 		for _, k := range keys {
 			out.live[k] = piLive{Status: r.State, BlockKind: r.BlockKind, Tool: r.Tool}
 		}
 	}
 	return out
+}
+
+// processStarts maps each live pid to when it started, so a receipt can be checked against
+// the process that answers to its pid now
+func processStarts() map[int]int64 {
+	procs := listProcesses()
+	out := make(map[int]int64, len(procs))
+	for _, p := range procs {
+		out[p.pid] = p.startTime
+	}
+	return out
+}
+
+// sameProcess compares a receipt's recorded start time with the process table's. An unknown
+// pid, or a receipt from an older extension that doesn't say, is taken at its word: this
+// exists to catch a reused pid, not to doubt every receipt
+func sameProcess(starts map[int]int64, r PiReceipt) bool {
+	started, known := starts[r.PID]
+	if !known || r.StartedAtMs <= 0 {
+		return true
+	}
+	diff := started - r.StartedAtMs/1000
+	return diff >= -piStartedTolerance && diff <= piStartedTolerance
 }
 
 // processAliveCached asks the system about each pid once per scan

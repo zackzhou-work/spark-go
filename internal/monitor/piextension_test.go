@@ -71,6 +71,7 @@ console.log(line("settled"));
 
 // A heartbeat has to refresh the file without changing what it says, or a session sitting on
 // one state looks like a process that died
+console.log("started: " + ((JSON.parse(readFileSync(file, "utf8")).startedAtMs ?? 0) > 0 && Date.now() - JSON.parse(readFileSync(file, "utf8")).startedAtMs < 600000));
 const before = readFileSync(file, "utf8");
 await new Promise((r) => setTimeout(r, 900));
 const after = readFileSync(file, "utf8");
@@ -122,6 +123,7 @@ func TestPiExtensionReportsItsState(t *testing.T) {
 		"closed: working kind=- tool=- input=false",
 		"typed: working kind=- tool=- input=true",
 		"settled: idle kind=- tool=- input=true",
+		"started: true",
 		"heartbeat: true",
 		// A reload hands the session to a fresh instance, so the state stays where it was
 		"reloaded: idle kind=- tool=- input=true",

@@ -44,6 +44,11 @@ export default function (pi: any): void {
     return block ? "blocked" : active ? "working" : "idle";
   }
 
+  // When this process started, which lets spark tell a pid it still owns from one the system
+  // has handed to somebody else since
+  const startedAtMs =
+    typeof process.uptime === "function" ? Date.now() - Math.round(process.uptime() * 1000) : 0;
+
   function flush(state?: string, force = false): void {
     if (!usable || !sessionPath) return;
     const block = blocks[0];
@@ -60,6 +65,7 @@ export default function (pi: any): void {
       blockKind: block?.kind ?? "",
       tool: block?.tool ?? "",
       updatedAtMs: Date.now(),
+      startedAtMs,
       lastInputAtMs: lastInputAt,
     });
     const target = join(DIR, `${sessionId || sessionPath.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);

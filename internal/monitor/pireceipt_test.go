@@ -111,3 +111,42 @@ func TestPiExtensionInstallsAndIsNoticed(t *testing.T) {
 		t.Errorf("mode = %v, want it readable by pi", info.Mode())
 	}
 }
+
+func receiptJSONStarted(sessionID, path string, pid int, startedMs, updatedMs, inputMs int64, state string) string {
+	return `{"sessionId":"` + sessionID + `","sessionPath":"` + path + `","pid":` + strconv.Itoa(pid) +
+		`,"state":"` + state + `","startedAtMs":` + strconv.FormatInt(startedMs, 10) +
+		`,"updatedAtMs":` + strconv.FormatInt(updatedMs, 10) +
+		`,"lastInputAtMs":` + strconv.FormatInt(inputMs, 10) + `}`
+}
+
+// A receipt speaks for the process that wrote it. A crashed pi leaves one behind, and by the
+// time spark reads it the recorded pid can belong to something else
+func TestReadPiReceiptsChecksTheProcessBehindThePid(t *testing.T) {
+	starts := processStarts()
+	mine, ok := starts[os.Getpid()]
+	if !ok {
+		t.Skip("this platform has no process table to check against")
+	}
+	dir := t.TempDir()
+	now := time.Now().UnixMilli()
+
+	writeReceipt(t, dir, "mine.json", receiptJSONStarted("mine", "/sessions/mine.jsonl", os.Getpid(), mine*1000, now, now-1000, piWorking))
+	// Same pid, an hour older: the process that wrote this is gone and its pid was reused
+	writeReceipt(t, dir, "reused.json", receiptJSONStarted("reused", "/sessions/reused.jsonl", os.Getpid(), (mine-3600)*1000, now, now-2000, piBlocked))
+	// An extension that doesn't say when it started is taken at its word
+	writeReceipt(t, dir, "quiet.json", receiptJSON("quiet", "/sessions/quiet.jsonl", os.Getpid(), piWorking, now, 0))
+
+	got := ReadPiReceipts(dir)
+	if _, ok := got.live["/sessions/mine.jsonl"]; !ok {
+		t.Error("a receipt from this process is live state")
+	}
+	if _, ok := got.live["/sessions/reused.jsonl"]; ok {
+		t.Error("a receipt whose pid now belongs to another process is not")
+	}
+	if got.seen["/sessions/reused.jsonl"] != now-2000 {
+		t.Errorf("seen = %d, want the look to still count", got.seen["/sessions/reused.jsonl"])
+	}
+	if _, ok := got.live["/sessions/quiet.jsonl"]; !ok {
+		t.Error("a receipt with no start time is believed")
+	}
+}
