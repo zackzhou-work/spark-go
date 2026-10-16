@@ -40,8 +40,13 @@ type PiSession struct {
 	// LastEvent is the turn progress at the end of the file. It only decides what a
 	// blocked session is blocked on: whether a turn is live comes from Herdr or the
 	// extension, never from a guess
-	LastEvent  TurnEvent
+	LastEvent TurnEvent
+	// ActivityAt is when anything last happened in the file, metadata included, which is
+	// what the row's time and the day it belongs to go by
 	ActivityAt int64
+	// TurnAt is when the conversation last moved -- a user message, an assistant reply or a
+	// tool result. Unread timing uses it, so a rename after a turn can't invent a result
+	TurnAt int64
 }
 
 // PiSessionsRoot is where pi keeps its sessions, one directory per working directory
@@ -71,17 +76,26 @@ type piRecord struct {
 	Message *piMessage `json:"message"`
 }
 
-// ReadPiSession reads both ends of a session file: identity and title from the head, the
-// turn's standing and the newest timestamp from the tail
+// ReadPiSession reads both ends of a session file: identity and the first user message from
+// the head, the turn's standing and the timestamps from the tail
 func ReadPiSession(path string) (PiSession, bool) {
+	session, _, ok := readPiSession(path, 0, "")
+	return session, ok
+}
+
+// readPiSession reads one session file. nameFrom and name are what an earlier read already
+// covered for the session's own name, so a file that only grew is searched from where that
+// read stopped; pass 0 and "" for a first read. It answers the offset the name search
+// reached, which is where the next read resumes
+func readPiSession(path string, nameFrom int64, name string) (PiSession, int64, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return PiSession{}, false
+		return PiSession{}, nameFrom, false
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return PiSession{}, false
+		return PiSession{}, nameFrom, false
 	}
 
 	// Activity comes from the newest entry the tail shows, falling back to the file's own
@@ -90,11 +104,11 @@ func ReadPiSession(path string) (PiSession, bool) {
 
 	head, err := readAt(f, 0, min(info.Size(), piHeadBytes))
 	if err != nil {
-		return PiSession{}, false
+		return PiSession{}, nameFrom, false
 	}
 	headLines := piLines(head, info.Size() > piHeadBytes)
 	if len(headLines) == 0 {
-		return PiSession{}, false
+		return PiSession{}, nameFrom, false
 	}
 	if header, ok := decodePiRecord(headLines[0]); ok {
 		out.ID = header.ID
@@ -115,7 +129,7 @@ func ReadPiSession(path string) (PiSession, bool) {
 	start := max(info.Size()-piTailBytes, 0)
 	tail, err := readAt(f, start, info.Size()-start)
 	if err != nil {
-		return PiSession{}, false
+		return PiSession{}, nameFrom, false
 	}
 	tailLines := piLines(tail, false)
 	if start > 0 && len(tailLines) > 0 {
@@ -134,6 +148,11 @@ func ReadPiSession(path string) (PiSession, bool) {
 		}
 		switch r.Type {
 		case "message":
+			// Unread timing goes by the conversation, not by whatever was written last: a
+			// rename, a model switch or an extension's own state say nothing about a result
+			if ts := piEntryTime(tailLines[i]); ts > out.TurnAt {
+				out.TurnAt = ts
+			}
 			if !gotEvent && r.Message != nil {
 				if event, ok := piTurnEvent(r.Message, results); ok {
 					out.LastEvent = event
@@ -142,28 +161,36 @@ func ReadPiSession(path string) (PiSession, bool) {
 			}
 		}
 	}
-	if name := persistedPiName(f); name != "" {
+	name, nameAt := piNameAt(f, nameFrom, info.Size(), name)
+	if name != "" {
 		out.Title = name
 	}
 	if out.ActivityAt == 0 {
 		out.ActivityAt = info.ModTime().UnixMilli()
 	}
-	return out, true
+	return out, nameAt, true
 }
 
-// persistedPiName finds the name the user gave the session. /name can be used at any point
-// and the newest entry wins wherever it sits, which the bounded head and tail windows can
-// miss once later output is long enough; looking for the key costs one pass over the file
-// and only the lines that mention it get decoded
-func persistedPiName(f *os.File) string {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return ""
+// piNameAt looks for the name the user gave the session, in [from, size) only. /name writes
+// a new entry wherever the session happens to be, so the newest one wins; the answer is the
+// name found, or fallback when the range holds none. The offset it returns is the end of the
+// last complete line, so a line the writer is still producing is looked at again next time
+// rather than skipped
+func piNameAt(f *os.File, from, size int64, fallback string) (string, int64) {
+	if from < 0 || from > size {
+		from = 0
 	}
-	name := ""
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(io.NewSectionReader(f, from, size-from))
 	sc.Buffer(make([]byte, 64*1024), piMaxLineBytes)
+	name, scanned := fallback, from
 	for sc.Scan() {
 		line := sc.Bytes()
+		end := scanned + int64(len(line)) + 1
+		if end > size {
+			// The last line has no newline yet: leave it whole for the next read
+			break
+		}
+		scanned = end
 		if !bytes.Contains(line, []byte(piSessionInfo)) {
 			continue
 		}
@@ -171,7 +198,7 @@ func persistedPiName(f *os.File) string {
 			name = r.Name
 		}
 	}
-	return name
+	return name, scanned
 }
 
 // piToolResults collects the tool calls that already came back, so a call still hanging at
@@ -308,7 +335,11 @@ func piLines(window []byte, truncated bool) [][]byte {
 type piCached struct {
 	modifiedMs int64
 	size       int64
-	session    PiSession
+	// nameAt is how far the search for the session's own name has read, and name what it
+	// found; both carry over to the next read of a file that only grew
+	nameAt  int64
+	name    string
+	session PiSession
 }
 
 // readPiSession caches what a file said the last time it changed: a scan runs every few
@@ -321,14 +352,27 @@ func (s *Scanner) readPiSession(path string) (PiSession, bool) {
 	if cached, ok := s.piCache[path]; ok && cached.modifiedMs == info.ModTime().UnixMilli() && cached.size == info.Size() {
 		return cached.session, true
 	}
-	session, ok := ReadPiSession(path)
+	// A file that only grew is resumed: a session being written to must not be searched
+	// from the top for a name every few seconds
+	prev := s.piCache[path]
+	from, name := int64(0), ""
+	if prev.nameAt > 0 && prev.nameAt <= info.Size() && info.Size() >= prev.size {
+		from, name = prev.nameAt, prev.name
+	}
+	session, nameAt, ok := readPiSession(path, from, name)
 	if !ok {
 		return PiSession{}, false
 	}
 	if s.piCache == nil {
 		s.piCache = map[string]piCached{}
 	}
-	s.piCache[path] = piCached{info.ModTime().UnixMilli(), info.Size(), session}
+	s.piCache[path] = piCached{
+		modifiedMs: info.ModTime().UnixMilli(),
+		size:       info.Size(),
+		nameAt:     nameAt,
+		name:       name,
+		session:    session,
+	}
 	return session, true
 }
 
@@ -430,7 +474,7 @@ func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs, nowMs i
 	// Only the extension is left, and it sees prompts rather than the user reading: those
 	// come before the turn ran, so the badge fades instead of waiting on someone who has
 	// walked away
-	if session.ActivityAt > lastSeenMs && nowMs-session.ActivityAt < piUnreadWindow.Milliseconds() {
+	if session.TurnAt > lastSeenMs && nowMs-session.TurnAt < piUnreadWindow.Milliseconds() {
 		return Unread, WaitPermission
 	}
 	return Completed, WaitPermission

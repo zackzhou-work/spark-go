@@ -164,10 +164,10 @@ func TestPiSessionStateNeedsALiveSignal(t *testing.T) {
 	now := time.Now().UnixMilli()
 	// A turn that just finished, one that finished two minutes ago, and ones either side of
 	// the window a badge on an unreportable session gets
-	ended := PiSession{ActivityAt: now, LastEvent: Ended}
-	endedEarlier := PiSession{ActivityAt: now - 120_000, LastEvent: Ended}
-	endedSoon := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds()/2, LastEvent: Ended}
-	endedEarly := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds() - 60_000, LastEvent: Ended}
+	ended := PiSession{ActivityAt: now, TurnAt: now, LastEvent: Ended}
+	endedEarlier := PiSession{ActivityAt: now - 120_000, TurnAt: now - 120_000, LastEvent: Ended}
+	endedSoon := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds()/2, TurnAt: now - piUnreadWindow.Milliseconds()/2, LastEvent: Ended}
+	endedEarly := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds() - 60_000, TurnAt: now - piUnreadWindow.Milliseconds() - 60_000, LastEvent: Ended}
 
 	cases := []struct {
 		name     string
@@ -380,6 +380,19 @@ func TestScanPiTakesHerdrsWordForUnseenWork(t *testing.T) {
 	}
 }
 
+// appendPiRaw adds text with no newline, the way a writer is caught mid-line
+func appendPiRaw(t *testing.T, path, text string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(text); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+}
+
 func appendPiLine(t *testing.T, path, line string) {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
@@ -430,5 +443,77 @@ func TestScanPiFadesTheBadgeOnASessionNothingReportsLooking(t *testing.T) {
 	}
 	if states["recent"] != Unread {
 		t.Errorf("an unseen session from a minute ago = %v, want Unread", states["recent"])
+	}
+}
+
+// A rename, a model switch or an extension's own state are not results: unread timing has to
+// go by the conversation, or every /name would raise a New badge
+func TestPiTurnTimeIgnoresMetadata(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	now := time.Now()
+	turn := now.Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	later := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	path := writePiSession(t, root, cwd, "2026-10-15T08-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+turn+`","message":{"role":"user","content":"first words"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+turn+`","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}`+"\n"+
+			`{"type":"session_info","id":"m3","timestamp":"`+later+`","name":"Named after the fact"}`+"\n"+
+			`{"type":"custom","id":"m4","customType":"some-extension","timestamp":"`+later+`","data":{}}`+"\n")
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	wantTurn := now.Add(-2 * time.Hour).UnixMilli()
+	if session.TurnAt != wantTurn {
+		t.Errorf("turn time = %s, want %s", time.UnixMilli(session.TurnAt), time.UnixMilli(wantTurn))
+	}
+	if session.ActivityAt <= session.TurnAt {
+		t.Errorf("activity = %s, want the metadata's later time", time.UnixMilli(session.ActivityAt))
+	}
+	// The rename is newer than the turn and old enough to have faded: neither is a result
+	if state, _ := piSessionState(session, piLive{Status: piIdle}, true, 0, now.UnixMilli()); state != Completed {
+		t.Errorf("state = %v, want Completed: only the conversation counts", state)
+	}
+}
+
+// The name search resumes where the last read stopped, so an appended rename is found
+// without rereading the session, and a line the writer hasn't finished is not skipped
+func TestScanPiFindsARenameInWhatWasAppended(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+	path := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+stamp+`","message":{"role":"user","content":"first words"}}`+"\n")
+	s := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: filepath.Join(root, "missing.sock")}
+
+	title := func() string {
+		found := s.scanPi(time.Now())
+		if len(found) != 1 {
+			t.Fatalf("found %d sessions: %+v", len(found), found)
+		}
+		return found[0].item.Title
+	}
+	if got := title(); got != "first words" {
+		t.Fatalf("title = %q, want the first user message", got)
+	}
+
+	// Half a rename, as a writer caught mid-line: no newline yet
+	appendPiRaw(t, path, `{"type":"session_info","id":"m2","timestamp":"`+stamp+`","name":"Renamed`)
+	if got := title(); got != "first words" {
+		t.Fatalf("title = %q, want it unchanged until the line is complete", got)
+	}
+	// The rest of it, and the search has to have kept the beginning
+	appendPiRaw(t, path, ` later"}`+"\n")
+	if got := title(); got != "Renamed later" {
+		t.Errorf("title = %q, want the completed rename to be read", got)
+	}
+
+	// A second rename still wins
+	appendPiLine(t, path, `{"type":"session_info","id":"m3","timestamp":"`+stamp+`","name":"Renamed again"}`)
+	if got := title(); got != "Renamed again" {
+		t.Errorf("title = %q, want the newest rename", got)
 	}
 }
