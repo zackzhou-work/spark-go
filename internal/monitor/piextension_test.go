@@ -71,6 +71,8 @@ console.log(line("settled"));
 
 // A heartbeat has to refresh the file without changing what it says, or a session sitting on
 // one state looks like a process that died
+const body = JSON.parse(readFileSync(file, "utf8"));
+console.log("install: " + body.install);
 console.log("started: " + ((JSON.parse(readFileSync(file, "utf8")).startedAtMs ?? 0) > 0 && Date.now() - JSON.parse(readFileSync(file, "utf8")).startedAtMs < 600000));
 const before = readFileSync(file, "utf8");
 await new Promise((r) => setTimeout(r, 900));
@@ -78,6 +80,13 @@ const after = readFileSync(file, "utf8");
 console.log("heartbeat: " + (JSON.parse(after).state === JSON.parse(before).state && JSON.parse(after).updatedAtMs > JSON.parse(before).updatedAtMs));
 await fire("session_shutdown", { reason: "reload" }, false);
 console.log(line("reloaded"));
+// A write scheduled just before a reload must not land after the successor has reported
+await fire("input", { source: "interactive", text: "typed again" });
+await fire("session_shutdown", { reason: "reload" }, false);
+const quietFrom = statSync(file).mtimeMs;
+await new Promise((r) => setTimeout(r, 1000));
+console.log("reload cancelled: " + (statSync(file).mtimeMs === quietFrom));
+
 await fire("session_shutdown", { reason: "quit" });
 console.log(line("stopped"));
 `
@@ -123,10 +132,12 @@ func TestPiExtensionReportsItsState(t *testing.T) {
 		"closed: working kind=- tool=- input=false",
 		"typed: working kind=- tool=- input=true",
 		"settled: idle kind=- tool=- input=true",
+		"install: " + InstalledIDForTest(t, home),
 		"started: true",
 		"heartbeat: true",
 		// A reload hands the session to a fresh instance, so the state stays where it was
 		"reloaded: idle kind=- tool=- input=true",
+		"reload cancelled: true",
 		"stopped: exited kind=- tool=- input=true",
 	}
 	got := strings.Split(strings.TrimSpace(string(out)), "\n")
@@ -138,4 +149,14 @@ func TestPiExtensionReportsItsState(t *testing.T) {
 			t.Errorf("line %d = %q, want %q", i+1, strings.TrimSpace(got[i]), want[i])
 		}
 	}
+}
+
+// InstalledIDForTest is the identity the installer wrote into this home's copy
+func InstalledIDForTest(t *testing.T, home string) string {
+	t.Helper()
+	id := PiInstalledID(home)
+	if id == "" {
+		t.Fatal("the installed extension carries no identity")
+	}
+	return id
 }

@@ -70,9 +70,6 @@ func TestReadPiSessionTakesTheFirstUserMessage(t *testing.T) {
 	if session.Title != "Add pi sessions to the list" {
 		t.Errorf("title = %q", session.Title)
 	}
-	if session.LastEvent != Ended {
-		t.Errorf("last event = %v, want Ended", session.LastEvent)
-	}
 	want := time.Date(2026, 10, 15, 10, 0, 9, 0, time.UTC).UnixMilli()
 	if session.ActivityAt != want {
 		t.Errorf("activity = %d, want %d", session.ActivityAt, want)
@@ -119,7 +116,7 @@ func TestReadPiSessionFindsARenameOutsideTheWindows(t *testing.T) {
 	if session.Title != "Rewritten later" {
 		t.Errorf("title = %q, want the name the user set", session.Title)
 	}
-	if session.LastEvent != Ended || session.ActivityAt == 0 {
+	if session.TurnAt == 0 || session.ActivityAt == 0 {
 		t.Errorf("the tail still has to be read: %+v", session)
 	}
 }
@@ -133,42 +130,14 @@ func fileSize(t *testing.T, path string) int64 {
 	return info.Size()
 }
 
-func TestPiTurnEventFindsAPendingQuestion(t *testing.T) {
-	ask := &piMessage{
-		Role:       "assistant",
-		StopReason: "toolUse",
-		Content:    []byte(`[{"type":"toolCall","id":"call_1","name":"ask_user_question","arguments":{}}]`),
-	}
-	if event, ok := piTurnEvent(ask, map[string]bool{}); !ok || event != AwaitingUser {
-		t.Errorf("pending question = %v %v, want AwaitingUser", event, ok)
-	}
-	if event, _ := piTurnEvent(ask, map[string]bool{"call_1": true}); event != ToolPending {
-		t.Errorf("answered question = %v, want ToolPending", event)
-	}
-	other := &piMessage{
-		Role:       "assistant",
-		StopReason: "toolUse",
-		Content:    []byte(`[{"type":"toolCall","id":"call_2","name":"bash","arguments":{}}]`),
-	}
-	if event, _ := piTurnEvent(other, map[string]bool{}); event != ToolPending {
-		t.Errorf("pending tool = %v, want ToolPending", event)
-	}
-	if event, _ := piTurnEvent(&piMessage{Role: "user", Content: []byte(`"hi"`)}, nil); event != Generating {
-		t.Errorf("user message = %v, want Generating", event)
-	}
-	if event, _ := piTurnEvent(&piMessage{Role: "assistant", StopReason: "stop"}, nil); event != Ended {
-		t.Errorf("finished turn = %v, want Ended", event)
-	}
-}
-
 func TestPiSessionStateNeedsALiveSignal(t *testing.T) {
 	now := time.Now().UnixMilli()
 	// A turn that just finished, one that finished two minutes ago, and ones either side of
 	// the window a badge on an unreportable session gets
-	ended := PiSession{ActivityAt: now, TurnAt: now, LastEvent: Ended}
-	endedEarlier := PiSession{ActivityAt: now - 120_000, TurnAt: now - 120_000, LastEvent: Ended}
-	endedSoon := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds()/2, TurnAt: now - piUnreadWindow.Milliseconds()/2, LastEvent: Ended}
-	endedEarly := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds() - 60_000, TurnAt: now - piUnreadWindow.Milliseconds() - 60_000, LastEvent: Ended}
+	ended := PiSession{ActivityAt: now, TurnAt: now}
+	endedEarlier := PiSession{ActivityAt: now - 120_000, TurnAt: now - 120_000}
+	endedSoon := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds()/2, TurnAt: now - piUnreadWindow.Milliseconds()/2}
+	endedEarly := PiSession{ActivityAt: now - piUnreadWindow.Milliseconds() - 60_000, TurnAt: now - piUnreadWindow.Milliseconds() - 60_000}
 
 	cases := []struct {
 		name     string
@@ -184,6 +153,10 @@ func TestPiSessionStateNeedsALiveSignal(t *testing.T) {
 		{name: "working", session: ended, live: piLive{Status: piWorking}, ok: true, now: now, want: Running},
 		{name: "blocked on a question", session: ended, live: piLive{Status: piBlocked, Tool: piAskTool}, ok: true, now: now, want: Waiting, reason: WaitQuestion},
 		{name: "blocked on a confirm dialog", session: ended, live: piLive{Status: piBlocked, BlockKind: "confirm"}, ok: true, now: now, want: Waiting, reason: WaitPermission},
+		// Nothing said which dialog it is and the file shows no hanging question, so it is an
+		// approval: Herdr's blocked covers both, and only a question leaves a trace
+		{name: "blocked with nothing said", session: ended, live: piLive{Status: piBlocked}, ok: true, now: now, want: Waiting, reason: WaitPermission},
+		{name: "blocked on a hanging question", session: PiSession{LastEvent: AwaitingUser, ActivityAt: now, TurnAt: now}, live: piLive{Status: piBlocked}, ok: true, now: now, want: Waiting, reason: WaitQuestion},
 		{name: "blocked on a select dialog", session: ended, live: piLive{Status: piBlocked, BlockKind: "select"}, ok: true, now: now, want: Waiting, reason: WaitQuestion},
 		{name: "idle and unseen", session: ended, live: piLive{Status: piIdle}, ok: true, now: now, want: Unread},
 		{name: "idle since before the user looked", session: endedEarlier, live: piLive{Status: piIdle}, ok: true, lastSeen: now - 60_000, now: now, want: Completed},
@@ -211,14 +184,56 @@ func TestPiSessionStateNeedsALiveSignal(t *testing.T) {
 	}
 }
 
-func TestPiWaitReasonFallsBackToTheSessionFile(t *testing.T) {
-	// Herdr only says "blocked", so a pending ask_user_question in the file decides
-	question := PiSession{LastEvent: AwaitingUser}
-	if got := piWaitReason(question, piLive{Status: piBlocked}); got != WaitQuestion {
-		t.Errorf("herdr blocked on a question file = %v", got)
+func TestPiWaitReasonGoesByWhatIsKnown(t *testing.T) {
+	cases := []struct {
+		name    string
+		session PiSession
+		live    piLive
+		want    WaitReason
+	}{
+		{"the extension names the tool", PiSession{}, piLive{Status: piBlocked, Tool: piAskTool}, WaitQuestion},
+		{"the extension names the dialog", PiSession{}, piLive{Status: piBlocked, BlockKind: "confirm"}, WaitPermission},
+		{"the extension names a select", PiSession{}, piLive{Status: piBlocked, BlockKind: "select"}, WaitQuestion},
+		// Herdr only says "blocked", which its own documentation says covers approvals and
+		// questions alike, so the session file decides
+		{"a question is left hanging", PiSession{LastEvent: AwaitingUser}, piLive{Status: piBlocked}, WaitQuestion},
+		{"something else is left hanging", PiSession{LastEvent: ToolPending}, piLive{Status: piBlocked}, WaitPermission},
+		{"nothing is left hanging", PiSession{LastEvent: Ended}, piLive{Status: piBlocked}, WaitPermission},
 	}
-	if got := piWaitReason(PiSession{LastEvent: ToolPending}, piLive{Status: piBlocked}); got != WaitPermission {
-		t.Errorf("herdr blocked on a running tool = %v", got)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := piWaitReason(c.session, c.live); got != c.want {
+				t.Errorf("piWaitReason = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// A record too large for the tail window is the last thing in the file, so a question in it
+// has no answer yet: its head is enough to tell, because the tool is named before its
+// arguments
+func TestPiTurnEventComesOutOfAnOversizedQuestionRecord(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	base := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	huge := strings.Repeat("context ", 12_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+base.Format(time.RFC3339Nano)+`","message":{"role":"user","content":"ask me"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+base.Add(time.Second).Format(time.RFC3339Nano)+`","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"ask_user_question","arguments":{"note":"`+huge+`"}}]}}`+"\n")
+	if size := fileSize(t, path); size < piTailBytes {
+		t.Fatalf("the fixture is %d bytes, not big enough to fill the tail window", size)
+	}
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	if session.LastEvent != AwaitingUser {
+		t.Errorf("last event = %v, want the hanging question", session.LastEvent)
+	}
+	if got := piWaitReason(session, piLive{Status: piBlocked}); got != WaitQuestion {
+		t.Errorf("wait reason = %v, want a question", got)
 	}
 }
 
@@ -651,5 +666,85 @@ func TestReadPiSessionReadsAHugeFirstUserMessage(t *testing.T) {
 	}
 	if n := utf8.RuneCountInString(session.Title); n != 121 {
 		t.Errorf("title is %d runes, want 120 and an ellipsis: %q", n, session.Title)
+	}
+}
+
+// The salvaged record is the one the window cut through, so a complete message after it is
+// newer and has to win: an old question must not label a later approval
+func TestPiTurnEventPrefersACompleteRecordOverTheSalvagedOne(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	base := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	huge := strings.Repeat("context ", 12_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+base.Format(time.RFC3339Nano)+`","message":{"role":"user","content":"ask me"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+base.Add(time.Second).Format(time.RFC3339Nano)+`","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"ask_user_question","arguments":{"note":"`+huge+`"}}]}}`+"\n"+
+			`{"type":"message","id":"m3","timestamp":"`+base.Add(2*time.Second).Format(time.RFC3339Nano)+`","message":{"role":"user","content":"go on"}}`+"\n")
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	if session.LastEvent == AwaitingUser {
+		t.Error("the answered question is behind the window, and the newer message is what stands")
+	}
+	if got := piWaitReason(session, piLive{Status: piBlocked}); got != WaitPermission {
+		t.Errorf("wait reason = %v, want an approval", got)
+	}
+}
+
+// A command that merely mentions the question tool is not the question tool: the name has to
+// be the call's own, or an approval reads as a question
+func TestPiTurnEventIgnoresTheQuestionToolNameInArguments(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	base := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	padding := strings.Repeat("output ", 12_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+base.Format(time.RFC3339Nano)+`","message":{"role":"user","content":"look into it"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+base.Add(time.Second).Format(time.RFC3339Nano)+`","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"grep -rn ask_user_question internal/monitor/pi.go","note":"`+padding+`"}}]}}`+"\n")
+	if size := fileSize(t, path); size < piTailBytes {
+		t.Fatalf("the fixture is %d bytes, not big enough to fill the tail window", size)
+	}
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	if session.LastEvent == AwaitingUser {
+		t.Error("a mention of the tool in the command is not the tool being called")
+	}
+	if got := piWaitReason(session, piLive{Status: piBlocked}); got != WaitPermission {
+		t.Errorf("wait reason = %v, want an approval", got)
+	}
+}
+
+// The tool a record hangs on can sit behind a long reasoning block, further in than the first
+// window, so the window has to grow rather than give up on it
+func TestPiTurnEventFindsAQuestionBehindALongReasoningBlock(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	base := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	thinking := strings.Repeat("weighing it up ", 700)
+	padding := strings.Repeat("detail ", 12_000)
+	path := writePiSession(t, root, cwd, "2026-10-15T09-00-00-000Z_abc.jsonl",
+		piHeader("abc", cwd)+
+			`{"type":"message","id":"m1","timestamp":"`+base.Format(time.RFC3339Nano)+`","message":{"role":"user","content":"ask me"}}`+"\n"+
+			`{"type":"message","id":"m2","timestamp":"`+base.Add(time.Second).Format(time.RFC3339Nano)+`","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"thinking","thinking":"`+thinking+`"},{"type":"toolCall","id":"c1","name":"ask_user_question","arguments":{"note":"`+padding+`"}}]}}`+"\n")
+	if size := fileSize(t, path); size < piTailBytes+int64(piRecordHeadBytes) {
+		t.Fatalf("the fixture is %d bytes, not long enough to push the tool past the first window", size)
+	}
+
+	session, ok := ReadPiSession(path)
+	if !ok {
+		t.Fatal("ReadPiSession failed")
+	}
+	if session.LastEvent != AwaitingUser {
+		t.Errorf("last event = %v, want the question behind the reasoning", session.LastEvent)
+	}
+	if got := piWaitReason(session, piLive{Status: piBlocked}); got != WaitQuestion {
+		t.Errorf("wait reason = %v, want a question", got)
 	}
 }

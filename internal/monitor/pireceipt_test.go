@@ -84,7 +84,10 @@ func TestPrunePiReceiptsDropsFinishedSessionsOnly(t *testing.T) {
 	}
 }
 
-func TestPiReportedNeedsAReceipt(t *testing.T) {
+// A receipt is proof that the extension was loaded only if it identifies the file this build
+// installs. A version number could not: a locally modified or freshly written file can carry
+// the same number while a running session still has the old one
+func TestPiReportedNeedsAReceiptFromThisExtension(t *testing.T) {
 	home := t.TempDir()
 	if PiReported(home) {
 		t.Error("nothing has reported in a fresh home")
@@ -96,11 +99,55 @@ func TestPiReportedNeedsAReceipt(t *testing.T) {
 	if PiReported(home) {
 		t.Error("an empty directory is not a report")
 	}
-	if err := os.WriteFile(filepath.Join(dir, "abc.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	// The install this test stands in for
+	home = t.TempDir()
+	if err := InstallPiExtension(home); err != nil {
+		t.Fatalf("install: %v", err)
 	}
-	if !PiReported(home) {
-		t.Error("a receipt is a report")
+	dir = PiReceiptDir(home)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	current := PiInstalledID(home)
+	if current == "" {
+		t.Fatal("the installed file carries no identity")
+	}
+
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"another install", `{"install":"0123456789abcdef"}`, false},
+		{"no identity at all", `{}`, false},
+		{"an older extension", `{"payload":1}`, false},
+		{"this install", `{"install":"` + current + `"}`, true},
+		{"not json", `not json`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(dir, "r.json")
+			if err := os.WriteFile(path, []byte(c.body), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			defer os.Remove(path)
+			if got := PiReported(home); got != c.want {
+				t.Errorf("PiReported = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// A session that ended says so, and its process being gone is the point: the badge window
+// still applies to the turn it finished
+func TestReadPiReceiptsKeepsAnExitedReceiptWithoutItsProcess(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UnixMilli()
+	writeReceipt(t, dir, "exited.json", receiptJSON("exited", "/sessions/exited.jsonl", 999999, piExited, now, now))
+
+	got := ReadPiReceipts(dir)
+	if _, ok := got.live["/sessions/exited.jsonl"]; !ok {
+		t.Error("an exited session is still a session spark knows about")
 	}
 }
 
@@ -168,5 +215,31 @@ func TestReadPiReceiptsChecksTheProcessBehindThePid(t *testing.T) {
 	}
 	if _, ok := got.live["/sessions/quiet.jsonl"]; !ok {
 		t.Error("a receipt with no start time is believed")
+	}
+}
+
+func TestPiExtensionOnDiskTellsTheThreeStates(t *testing.T) {
+	home := t.TempDir()
+	if got := PiExtensionOnDisk(home); got != PiExtensionAbsent {
+		t.Errorf("a fresh home = %v, want absent", got)
+	}
+	path := PiExtensionPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("// what an older release installed\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := PiExtensionOnDisk(home); got != PiExtensionOutdated {
+		t.Errorf("an older file = %v, want outdated", got)
+	}
+	if PiExtensionInstalled(home) {
+		t.Error("an outdated copy is not installed as far as spark is concerned")
+	}
+	if err := InstallPiExtension(home); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got := PiExtensionOnDisk(home); got != PiExtensionCurrent {
+		t.Errorf("after installing = %v, want current", got)
 	}
 }

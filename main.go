@@ -14,6 +14,29 @@ import (
 	"github.com/zackzhou-work/spark-go/internal/monitor"
 )
 
+// sideState is everything the window shows besides its session groups: the hooks each agent
+// needs and what pi's setup line goes by, all of it read from disk
+type sideState struct {
+	hooked        bool
+	codexHooked   bool
+	piState       monitor.PiExtensionState
+	piInstalledAt time.Time
+	piReported    bool
+	piInstalled   bool
+}
+
+func readSideState(home string) sideState {
+	side := sideState{
+		hooked:      monitor.HookInstalled(home),
+		codexHooked: monitor.CodexHooksInstalled(home),
+		piState:     monitor.PiExtensionOnDisk(home),
+		piReported:  monitor.PiReported(home),
+	}
+	side.piInstalledAt = monitor.PiInstalledAt(home)
+	side.piInstalled = side.piState == monitor.PiExtensionCurrent
+	return side
+}
+
 func main() {
 	avatars := flag.Bool("avatars", false, "open the character preview instead of the monitor")
 	flag.Parse()
@@ -24,13 +47,11 @@ func main() {
 
 	scanner := monitor.NewScanner()
 	home, _ := os.UserHomeDir()
-	a := &app{
-		pinned:             true,
-		groups:             scanner.ScanAll(),
-		hookInstalled:      monitor.HookInstalled(home),
-		codexHookInstalled: monitor.CodexHooksInstalled(home),
-		piHookInstalled:    monitor.PiExtensionInstalled(home),
-	}
+	a := &app{pinned: true, groups: scanner.ScanAll()}
+	// The state the window starts with is also the watcher's baseline, so the two cannot
+	// disagree about what has already been published
+	side := readSideState(home)
+	a.applySideState(side)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -57,6 +78,7 @@ func main() {
 		var closed atomic.Bool
 		win.OnClosed(func() { closed.Store(true) })
 		last := a.groups
+		lastSide := side
 		// The "minutes ago" labels don't refresh on file changes, so rebuild the view once a
 		// minute
 		go func() {
@@ -71,15 +93,18 @@ func main() {
 			if closed.Load() {
 				return false
 			}
-			if reflect.DeepEqual(groups, last) {
+			// What the window shows besides its groups comes from disk, so it is read here on
+			// the scan goroutine rather than in the view, which rebuilds several times for one
+			// event. A hook or a receipt can arrive without changing any group, so both have to
+			// be compared, not just the groups
+			side := readSideState(home)
+			if reflect.DeepEqual(groups, last) && side == lastSide {
 				return true
 			}
-			last = groups
-			hooked := monitor.HookInstalled(home)
-			codexHooked := monitor.CodexHooksInstalled(home)
-			piHooked := monitor.PiExtensionInstalled(home)
+			last, lastSide = groups, side
 			win.Update(func() {
-				a.groups, a.hookInstalled, a.codexHookInstalled, a.piHookInstalled = groups, hooked, codexHooked, piHooked
+				a.groups = groups
+				a.applySideState(side)
 			})
 			return true
 		})

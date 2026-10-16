@@ -272,3 +272,39 @@ func TestJumpable(t *testing.T) {
 		}
 	}
 }
+
+// An outdated extension is a dead end without this: reloading pi loads the same old file, so
+// the line under the heading has to offer the update itself
+func TestTodayNoticeOffersToUpdateAnOutdatedExtension(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := monitor.PiExtensionPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("// what an older release installed\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	a := demoApp()
+	a.hookInstalled, a.codexHookInstalled = true, true
+	a.applyPiSetup(readSideState(home))
+	tt := newViewTester(a, 360, 640)
+	if !tt.HasText("out of date") {
+		t.Fatalf("the page should say the extension needs updating; it shows %q", tt.Texts())
+	}
+	if tt.HasText("Install for pi") {
+		t.Error("the line carries the action, so the banner has nothing to offer")
+	}
+	if err := tt.Click("Update"); err != nil {
+		t.Fatal(err)
+	}
+	if !monitor.PiExtensionInstalled(home) {
+		t.Fatal("Update should write the file this build ships")
+	}
+	// With the file current, what is left is the reload
+	tt.Frame()
+	if !tt.HasText("need /reload or a restart") {
+		t.Errorf("after updating it should ask for the reload; it shows %q", tt.Texts())
+	}
+}

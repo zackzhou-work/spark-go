@@ -22,6 +22,12 @@ const FLUSH_MS = 700;
 // variable exists so the test can watch a beat without waiting five minutes
 const HEARTBEAT_MS = Number(process.env.SPARK_PI_HEARTBEAT_MS) || 5 * 60 * 1000;
 const ASK_TOOL = "ask_user_question";
+// The identity of the copy that is running. Spark replaces this when it installs the file and
+// compares what a session reports with what is on disk, which is what tells a session that
+// loaded the current copy from one still running an older one. A runtime cannot read its own
+// source reliably, so the identity has to be written into it. Bump the version in this marker
+// with the file, since a hand-copied install keeps it as it is
+const INSTALL_ID = "__SPARK_INSTALL_V1__";
 
 type Block = { key: string; kind: string; tool: string };
 
@@ -58,6 +64,7 @@ export default function (pi: any): void {
     // this is the heartbeat saying the process is still here
     if (!force && key === lastKey) return;
     const body = JSON.stringify({
+      install: INSTALL_ID,
       sessionId,
       sessionPath,
       pid: process.pid,
@@ -79,7 +86,11 @@ export default function (pi: any): void {
     }
   }
 
-  function stopHeartbeat(): void {
+  // stop cancels everything this instance has scheduled, so a replaced one cannot write over
+  // what its successor reports
+  function stop(): void {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
     if (heartbeat) clearInterval(heartbeat);
     heartbeat = undefined;
   }
@@ -118,7 +129,7 @@ export default function (pi: any): void {
     blocks = [];
     lastKey = "";
     flush();
-    stopHeartbeat();
+    stop();
     heartbeat = setInterval(() => flush(undefined, true), HEARTBEAT_MS);
     (heartbeat as any).unref?.();
   });
@@ -167,9 +178,9 @@ export default function (pi: any): void {
   });
 
   pi.on("session_shutdown", (event: any) => {
-    // Whichever way the session ends, this instance stops reporting; a reload is followed by
-    // a fresh instance with its own heartbeat
-    stopHeartbeat();
+    // Whichever way the session ends, this instance stops reporting: a reload is followed by a
+    // fresh instance, and a pending write from this one would overwrite its identity
+    stop();
     if (!usable) return;
     if (event?.reason === "reload") return;
     active = false;

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,23 +156,29 @@ func TestHookBannerInstallsThePiExtension(t *testing.T) {
 	if !monitor.PiExtensionInstalled(home) {
 		t.Error("the extension should be on disk")
 	}
-	if !a.piInstalledNow {
-		t.Error("the banner should remember it just installed for pi")
-	}
 	tt.Frame()
 	if tt.HasText("Install for pi") {
 		t.Error("an installed extension is not offered again")
 	}
+	// pi reads extensions at startup, so the card stays up until something reports
+	if !tt.HasText("One more step for pi") {
+		t.Errorf("the card should stay up until pi loads it; it shows %q", tt.Texts())
+	}
 }
 
 // pi loads extensions when a process starts, so installing while sessions are running
-// changes nothing for them: the card stays up until one of them reports
+// changes nothing for them: the card stays up until something reports afterwards
 func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if err := monitor.InstallPiExtension(home); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	installedAt := monitor.PiInstalledAt(home)
 	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "old", Sessions: []monitor.SessionItem{
 		{ID: "local_1", Title: "Last week's work", State: monitor.Completed, ActivityAt: time.Now().Add(-72 * time.Hour)},
-	}}}, hookInstalled: true, codexHookInstalled: true, piHookInstalled: true, piInstalledNow: true}
+	}}}, hookInstalled: true, codexHookInstalled: true}
+	a.applyPiSetup(readSideState(home))
 
 	tt := newViewTester(a, 360, 640)
 	if !tt.HasText("One more step for pi") {
@@ -181,17 +188,87 @@ func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
 		t.Error("nothing left to install")
 	}
 
-	// A receipt means some pi process loaded it, which is the whole point of the card
+	// A receipt from a session still running an older extension says nothing about the new
+	// one, however recently it was rewritten
+	writeReceiptForTest(t, home, "old.json", "another-install")
+	a.applyPiSetup(readSideState(home))
+	tt.Frame()
+	if !tt.HasText("One more step for pi") {
+		t.Errorf("an older payload should not count; it shows %q", tt.Texts())
+	}
+
+	// One from the payload this build installs means a pi process loaded it
+	writeReceiptForTest(t, home, "fresh.json", monitor.PiInstalledID(home))
+	a.applyPiSetup(readSideState(home))
+	tt.Frame()
+	if tt.HasText("One more step for pi") {
+		t.Errorf("the card should go once a session reports; it shows %q", tt.Texts())
+	}
+	_ = installedAt
+}
+
+// writeReceiptForTest puts a receipt in the pi directory, from a chosen install
+func writeReceiptForTest(t *testing.T, home, name, install string) string {
+	t.Helper()
 	dir := monitor.PiReceiptDir(home)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "abc.json"), []byte("{}"), 0o644); err != nil {
+	path := filepath.Join(dir, name)
+	body := fmt.Sprintf(`{"install":%q,"sessionId":"x","pid":%d}`, install, os.Getpid())
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	return path
+}
+
+// The install button only lives in the banner, which an empty list renders; a user with
+// sessions in front of them gets a line they can dismiss instead
+func TestTodayNoticePointsAtThePiReload(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := monitor.InstallPiExtension(home); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	installedAt := monitor.PiInstalledAt(home)
+	a := demoApp()
+	a.hookInstalled, a.codexHookInstalled = true, true
+	a.applyPiSetup(readSideState(home))
+
+	tt := newViewTester(a, 360, 640)
+	if !tt.HasText("need /reload or a restart") {
+		t.Fatalf("the page should say what pi still needs; it shows %q", tt.Texts())
+	}
+	if tt.HasText("Install for pi") {
+		t.Error("the extension is installed, so nothing should be offered")
+	}
+	if err := tt.Click("Dismiss"); err != nil {
+		t.Fatal(err)
+	}
 	tt.Frame()
-	if tt.HasText("One more step for pi") {
-		t.Errorf("the card should go once a session reports; it shows %q", tt.Texts())
+	if tt.HasText("need /reload or a restart") {
+		t.Errorf("dismissed, so it stays gone; it shows %q", tt.Texts())
+	}
+
+	// Dismissing is per install: a new install says what it needs again
+	if err := monitor.InstallPiExtension(home); err != nil {
+		t.Fatalf("reinstall: %v", err)
+	}
+	if err := os.Chtimes(monitor.PiExtensionPath(home), installedAt.Add(time.Hour), installedAt.Add(time.Hour)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	a.applyPiSetup(readSideState(home))
+	tt.Frame()
+	if !tt.HasText("need /reload or a restart") {
+		t.Errorf("a later install brings the line back; it shows %q", tt.Texts())
+	}
+
+	// And a session reporting afterwards takes it away for good
+	writeReceiptForTest(t, home, "fresh.json", monitor.PiInstalledID(home))
+	a.applyPiSetup(readSideState(home))
+	tt.Frame()
+	if tt.HasText("need /reload or a restart") {
+		t.Errorf("a session loaded it, so there is nothing left to say; it shows %q", tt.Texts())
 	}
 }
 
