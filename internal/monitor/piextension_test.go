@@ -80,6 +80,13 @@ const after = readFileSync(file, "utf8");
 console.log("heartbeat: " + (JSON.parse(after).state === JSON.parse(before).state && JSON.parse(after).updatedAtMs > JSON.parse(before).updatedAtMs));
 await fire("session_shutdown", { reason: "reload" }, false);
 console.log(line("reloaded"));
+// A write scheduled just before a reload must not land after the successor has reported
+await fire("input", { source: "interactive", text: "typed again" });
+await fire("session_shutdown", { reason: "reload" }, false);
+const quietFrom = statSync(file).mtimeMs;
+await new Promise((r) => setTimeout(r, 1000));
+console.log("reload cancelled: " + (statSync(file).mtimeMs === quietFrom));
+
 await fire("session_shutdown", { reason: "quit" });
 console.log(line("stopped"));
 `
@@ -130,6 +137,7 @@ func TestPiExtensionReportsItsState(t *testing.T) {
 		"heartbeat: true",
 		// A reload hands the session to a fresh instance, so the state stays where it was
 		"reloaded: idle kind=- tool=- input=true",
+		"reload cancelled: true",
 		"stopped: exited kind=- tool=- input=true",
 	}
 	got := strings.Split(strings.TrimSpace(string(out)), "\n")

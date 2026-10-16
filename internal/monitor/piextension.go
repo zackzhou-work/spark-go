@@ -73,9 +73,11 @@ func PiInstalledAt(home string) time.Time {
 	return info.ModTime()
 }
 
-// piInstallMarker is the identity the shipped extension carries. Installing replaces it, so
-// the file on disk says which copy it is and a session reports the same value back
-const piInstallMarker = "__SPARK_INSTALL__"
+// piInstallMarker is the identity the shipped extension carries. Installing replaces it with
+// one of its own, so the file on disk says which copy it is and a session reports the same
+// value back. The marker itself is versioned because a hand-copied install keeps it: without
+// the version, two releases would look like the same install. Bump it with the extension
+const piInstallMarker = "__SPARK_INSTALL_V1__"
 
 // PiInstalledID is the identity of the installed extension, which is the marker itself when the
 // file was copied rather than installed

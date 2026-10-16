@@ -48,7 +48,10 @@ func main() {
 	scanner := monitor.NewScanner()
 	home, _ := os.UserHomeDir()
 	a := &app{pinned: true, groups: scanner.ScanAll()}
-	a.applySideState(readSideState(home))
+	// The state the window starts with is also the watcher's baseline, so the two cannot
+	// disagree about what has already been published
+	side := readSideState(home)
+	a.applySideState(side)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -75,7 +78,7 @@ func main() {
 		var closed atomic.Bool
 		win.OnClosed(func() { closed.Store(true) })
 		last := a.groups
-		lastSide := readSideState(home)
+		lastSide := side
 		// The "minutes ago" labels don't refresh on file changes, so rebuild the view once a
 		// minute
 		go func() {
