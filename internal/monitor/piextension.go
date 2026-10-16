@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // PiExtensionPath is where the extension has to land for pi to load it: pi reads plain
@@ -32,16 +33,33 @@ func PiExtensionInstalled(home string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-// PiReported reports whether any pi process has written a receipt. pi loads extensions when
-// it starts, so a file on disk is not enough: this is what says a running session has picked
-// the extension up
-func PiReported(home string) bool {
+// PiInstalledAt is when the extension file was last written, which is the moment a receipt has
+// to beat to prove that a pi process loaded it
+func PiInstalledAt(home string) time.Time {
+	info, err := os.Stat(PiExtensionPath(home))
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+// PiReportedSince reports whether a pi process has written a receipt since then. pi loads
+// extensions when it starts, so a file on disk is not enough: this is what says a running
+// session has picked the extension up. A receipt from before the install says nothing about it
+func PiReportedSince(home string, since time.Time) bool {
 	entries, err := os.ReadDir(PiReceiptDir(home))
 	if err != nil {
 		return false
 	}
 	for _, e := range entries {
-		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(since) {
 			return true
 		}
 	}

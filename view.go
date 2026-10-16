@@ -135,9 +135,9 @@ type app struct {
 	hookInstalled      bool
 	codexHookInstalled bool
 	piHookInstalled    bool
-	// piInstalledNow remembers that the extension was installed during this run, so the
-	// banner can stay up until pi has loaded it
-	piInstalledNow bool
+	// piNoticeDismissed is the install the setup notice was dismissed for, so a later install
+	// brings it back
+	piNoticeDismissed time.Time
 	// cast is the character each project was given, handed out across all projects at once so
 	// that projects on screen clash as little as possible
 	cast map[string]character
@@ -290,6 +290,7 @@ func (a *app) todayPage(c *ui.Context, p palette, l layout, width float32) {
 		if l == layoutNarrow {
 			ui.Column(c).Padding(0, 10).Gap(8).Children(func() {
 				pageHeading(c, p, l, "Your agents, today.")
+				a.piSetupNotice(c, p)
 				for _, card := range needs {
 					a.needsStack(c.Key(card.group.ProjectName), p, card)
 				}
@@ -314,7 +315,8 @@ func (a *app) todayPage(c *ui.Context, p palette, l layout, width float32) {
 
 		ui.Column(c).Padding(4, 12, 16, 12).Children(func() {
 			pageHeading(c, p, l, "Your agents, today.")
-			ui.Column(c).Gap(8).Children(func() {
+			a.piSetupNotice(c, p)
+			ui.Column(c).Gap(8).Padding(8, 0, 0, 0).Children(func() {
 				for _, card := range needs {
 					a.needsRow(c.Key(card.group.ProjectName), p, card)
 				}
@@ -932,15 +934,45 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 	})
 }
 
-// piNeedsReload reports whether the banner still has to say that pi sessions already running
-// haven't loaded the extension: the file is in place, but nothing has reported yet. pi loads
-// extensions when it starts, so writing the file changes nothing for them
+// piNeedsReload reports whether spark still has to say that pi sessions already running
+// haven't loaded the extension: the file is in place, but no receipt has been written since
+// it landed. pi loads extensions when it starts, so writing the file changes nothing for a
+// session that is already up
 func (a *app) piNeedsReload() bool {
-	if !a.piInstalledNow || !a.piHookInstalled {
-		return false
+	_, waiting := a.piInstallWaiting()
+	return waiting
+}
+
+// piInstallWaiting is the moment the extension was installed and whether it is still waiting
+// to be picked up
+func (a *app) piInstallWaiting() (time.Time, bool) {
+	if !a.piHookInstalled {
+		return time.Time{}, false
 	}
 	home, err := os.UserHomeDir()
-	return err == nil && !monitor.PiReported(home)
+	if err != nil {
+		return time.Time{}, false
+	}
+	installedAt := monitor.PiInstalledAt(home)
+	if installedAt.IsZero() || monitor.PiReportedSince(home, installedAt) {
+		return installedAt, false
+	}
+	return installedAt, true
+}
+
+// piSetupNotice is the line under a page's heading while pi hasn't loaded the extension yet.
+// The install button lives in the banner, which only an empty list shows, so a user with
+// sessions in front of them would otherwise never learn that pi is one command away
+func (a *app) piSetupNotice(c *ui.Context, p palette) {
+	installedAt, waiting := a.piInstallWaiting()
+	if !waiting || a.piNoticeDismissed.Equal(installedAt) {
+		return
+	}
+	ui.Row(c).Background(p.tile).Radius(14).Padding(10, 12).Gap(10).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "pi is set up, but sessions that are already running need /reload or a restart before they report.").
+			FontSize(12).LineHeight(1.5).TextColor(p.sec).Grow(1).MinWidth(0)
+		pillButton(c, p, "Dismiss", false, 24, 11).OnClick(func() { a.piNoticeDismissed = installedAt })
+	})
 }
 
 // hookBanner prompts for the reports spark can't get on its own: without them an approval
@@ -1005,7 +1037,6 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 					return
 				}
 				a.piHookInstalled = true
-				a.piInstalledNow = true
 			})
 		}
 	}
