@@ -31,3 +31,19 @@ func PiExtensionInstalled(home string) bool {
 	info, err := os.Stat(PiExtensionPath(home))
 	return err == nil && info.Mode().IsRegular()
 }
+
+// PiReported reports whether any pi process has written a receipt. pi loads extensions when
+// it starts, so a file on disk is not enough: this is what says a running session has picked
+// the extension up
+func PiReported(home string) bool {
+	entries, err := os.ReadDir(PiReceiptDir(home))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
+			return true
+		}
+	}
+	return false
+}

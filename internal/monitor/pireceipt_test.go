@@ -84,6 +84,26 @@ func TestPrunePiReceiptsDropsFinishedSessionsOnly(t *testing.T) {
 	}
 }
 
+func TestPiReportedNeedsAReceipt(t *testing.T) {
+	home := t.TempDir()
+	if PiReported(home) {
+		t.Error("nothing has reported in a fresh home")
+	}
+	dir := PiReceiptDir(home)
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if PiReported(home) {
+		t.Error("an empty directory is not a report")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "abc.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !PiReported(home) {
+		t.Error("a receipt is a report")
+	}
+}
+
 func TestPiExtensionInstallsAndIsNoticed(t *testing.T) {
 	home := t.TempDir()
 	if PiExtensionInstalled(home) {

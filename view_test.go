@@ -155,9 +155,43 @@ func TestHookBannerInstallsThePiExtension(t *testing.T) {
 	if !monitor.PiExtensionInstalled(home) {
 		t.Error("the extension should be on disk")
 	}
+	if !a.piInstalledNow {
+		t.Error("the banner should remember it just installed for pi")
+	}
 	tt.Frame()
 	if tt.HasText("Install for pi") {
 		t.Error("an installed extension is not offered again")
+	}
+}
+
+// pi loads extensions when a process starts, so installing while sessions are running
+// changes nothing for them: the card stays up until one of them reports
+func TestHookBannerWaitsForPiToLoadTheExtension(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "old", Sessions: []monitor.SessionItem{
+		{ID: "local_1", Title: "Last week's work", State: monitor.Completed, ActivityAt: time.Now().Add(-72 * time.Hour)},
+	}}}, hookInstalled: true, codexHookInstalled: true, piHookInstalled: true, piInstalledNow: true}
+
+	tt := newViewTester(a, 360, 640)
+	if !tt.HasText("One more step for pi") {
+		t.Fatalf("the card should say what is still missing; it shows %q", tt.Texts())
+	}
+	if tt.HasText("Install for pi") {
+		t.Error("nothing left to install")
+	}
+
+	// A receipt means some pi process loaded it, which is the whole point of the card
+	dir := monitor.PiReceiptDir(home)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "abc.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tt.Frame()
+	if tt.HasText("One more step for pi") {
+		t.Errorf("the card should go once a session reports; it shows %q", tt.Texts())
 	}
 }
 

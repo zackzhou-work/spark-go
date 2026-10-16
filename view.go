@@ -135,6 +135,9 @@ type app struct {
 	hookInstalled      bool
 	codexHookInstalled bool
 	piHookInstalled    bool
+	// piInstalledNow remembers that the extension was installed during this run, so the
+	// banner can stay up until pi has loaded it
+	piInstalledNow bool
 	// cast is the character each project was given, handed out across all projects at once so
 	// that projects on screen clash as little as possible
 	cast map[string]character
@@ -921,12 +924,23 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 				pillButton(c, p, "Show all sessions", true, 40, 14).OnClick(func() { a.filter = filterAll })
 			}
 		})
-		if !a.hookInstalled || !a.codexHookInstalled || !a.piHookInstalled {
+		if !a.hookInstalled || !a.codexHookInstalled || !a.piHookInstalled || a.piNeedsReload() {
 			a.hookBanner(c, p, l)
 		} else {
 			ui.Box(c).Height(12)
 		}
 	})
+}
+
+// piNeedsReload reports whether the banner still has to say that pi sessions already running
+// haven't loaded the extension: the file is in place, but nothing has reported yet. pi loads
+// extensions when it starts, so writing the file changes nothing for them
+func (a *app) piNeedsReload() bool {
+	if !a.piInstalledNow || !a.piHookInstalled {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	return err == nil && !monitor.PiReported(home)
 }
 
 // hookBanner prompts for the reports spark can't get on its own: without them an approval
@@ -949,14 +963,20 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 		missing++
 	}
 	stacked := l == layoutNarrow || (missing > 1 && width < hookBannerInlineMinWidth)
+	reload := a.piNeedsReload()
 	prose := func(grow bool) {
 		text := ui.Column(c).MinWidth(0)
 		if grow {
 			text.Grow(1)
 		}
+		title, body := "Hear about prompts right away", "Install the hook each agent needs, so spark doesn’t have to guess."
+		if missing == 0 && reload {
+			// Nothing left to install: the card stays up for the one step spark can't take
+			title, body = "One more step for pi", "Restart pi, or run /reload in it, so sessions that are running start reporting."
+		}
 		text.Children(func() {
-			ui.Text(c, "Hear about prompts right away").FontSize(14).LineHeight(20.0 / 14).FontWeight(510)
-			ui.Text(c, "Install the hook each agent needs, so spark doesn’t have to guess.").FontSize(12).LineHeight(1.5).TextColor(p.sec)
+			ui.Text(c, title).FontSize(14).LineHeight(20.0 / 14).FontWeight(510)
+			ui.Text(c, body).FontSize(12).LineHeight(1.5).TextColor(p.sec)
 		})
 	}
 	install := func() {
@@ -985,6 +1005,7 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 					return
 				}
 				a.piHookInstalled = true
+				a.piInstalledNow = true
 			})
 		}
 	}

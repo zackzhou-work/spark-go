@@ -147,7 +147,7 @@ Press **Install for pi** in the banner, or copy the file by hand:
 mkdir -p ~/.pi/agent/extensions && cp internal/monitor/hookscript/spark-pi.ts ~/.pi/agent/extensions/spark-pi.ts
 ```
 
-pi loads plain TypeScript from that directory, so this is the whole install; nothing in `settings.json` changes. The extension **only observes**: it writes `~/.config/spark/pi/<sessionId>.json` for spark to read, one file per session, and never returns a decision or blocks a tool. Delete the file to uninstall.
+pi loads plain TypeScript from that directory, so this is the whole install; nothing in `settings.json` changes. pi reads extensions when a process starts, so a session that is already running keeps going without it: run `/reload` in it, or restart pi, to have it report from then on. The banner says so until the first receipt arrives. The extension **only observes**: it writes `~/.config/spark/pi/<sessionId>.json` for spark to read, one file per session, and never returns a decision or blocks a tool. Delete the file to uninstall.
 
 It reports what pi already knows — the turn's state, what a blocking dialog is asking for, and the time of your last input — so a session in an IDE or a terminal shows up as working, blocked or idle even when Herdr isn't involved.
 
