@@ -27,7 +27,8 @@ spark watches three agents: Claude Desktop's Code tab, Codex, and pi.
 
 ### Codex
 
-- **Rollouts**: each thread writes `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<time>-<threadId>.jsonl`. The first line carries the cwd; the first real user message becomes the title; the tail says where the turn stands (`task_complete` ends it, a tool call with no output means it's running). Threads with a `parent_thread_id` are sub-agents and are left out.
+- **Rollouts**: each thread writes `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<time>-<threadId>.jsonl`. The first line carries the thread ID and the cwd, and the tail says where the turn stands (`task_complete` ends it, a tool call with no output means it's running). Threads with a `parent_thread_id` are sub-agents and are left out. Resuming a thread writes another rollout, named `<threadId>_<segmentId>`, so a thread can own several files: spark keeps the newest for the state and lists the thread once.
+- **`thread_name` in `~/.codex/session_index.jsonl`**: the name the desktop app shows for each thread, which is what spark titles the row with. Without one, the first real user message of the thread's oldest rollout stands in.
 - **Hooks (optional)**: spark can install itself into `~/.codex/hooks.json` from the banner in the app. Codex reports `PermissionRequest`, `Stop` and the rest directly, and a hook newer than the rollout wins, because events land on disk a moment after they happen.
 - **`electron-thread-read-state-v1` in `~/.codex/.codex-global-state.json`**: the list of threads the desktop app still marks unread, which plays the same role as Claude's `lastFocusedAt`.
 - Codex threads aren't separate processes the way `claude` is, so spark can only tell that Codex is running at all, and falls back to "has this rollout been quiet for 30 minutes" for the rest.

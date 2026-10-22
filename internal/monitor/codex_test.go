@@ -84,6 +84,12 @@ func TestExtractsThreadIDFromRolloutName(t *testing.T) {
 	if threadIDFromRollout("rollout-short.jsonl") != "" {
 		t.Error("malformed name should give no thread id")
 	}
+	// Resuming a thread writes another rollout named after the thread and the segment it
+	// belongs to; the thread is the part before the underscore
+	resumed := "rollout-2026-10-21T15-35-05-" + threadA + "_01a15d62-98b3-75c3-9471-3d457a50c519.jsonl"
+	if got := threadIDFromRollout(resumed); got != threadA {
+		t.Errorf("resumed rollout thread id = %q, want %q", got, threadA)
+	}
 }
 
 func TestClassifiesCodexHookEvents(t *testing.T) {
@@ -264,6 +270,92 @@ func TestScanCodexFindsThreads(t *testing.T) {
 	}
 }
 
+// Resuming a thread writes a second rollout, so one thread owns two files. Both are the
+// same thread: listed separately, the thread shows up twice and the second copy can't be
+// opened at all, because its name carries the segment as well
+func TestResumedRolloutStaysOneThread(t *testing.T) {
+	const segment = "01a15d62-98b3-75c3-9471-3d457a50c519"
+	meta := `{"type":"session_meta","payload":{"id":"` + threadA + `","session_id":"` + threadA + `","cwd":"/Users/me/work/docs"}}` + "\n"
+	userMsg := func(text string) string {
+		return `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"` + text + `"}]}}` + "\n"
+	}
+
+	home := t.TempDir()
+	day := filepath.Join(home, ".codex", "sessions", "2026", "10", "21")
+	stub := writeRollout(t, day, "rollout-2026-10-21T15-34-42-"+threadA+".jsonl", meta)
+	resumed := writeRollout(t, day, "rollout-2026-10-21T15-35-05-"+threadA+"_"+segment+".jsonl",
+		meta+userMsg("redesign the last diagram")+`{"type":"event_msg","payload":{"type":"task_started"}}`+"\n")
+	setModTime(t, stub, nowTime().Add(-2*time.Hour))
+	setModTime(t, resumed, nowTime().Add(-time.Minute))
+
+	s := &Scanner{
+		CodexRoot:    filepath.Join(home, ".codex", "sessions"),
+		CodexHome:    filepath.Join(home, ".codex"),
+		CodexHookDir: CodexHookDir(home),
+	}
+	got := s.scanCodex(nowTime())
+	if len(got) != 1 {
+		t.Fatalf("one thread should be one row, got %d: %+v", len(got), got)
+	}
+	item := got[0].item
+	if item.ID != threadA {
+		t.Errorf("id = %q, want the thread id", item.ID)
+	}
+	if _, ok := CodexDeeplink(item.ID); !ok {
+		t.Errorf("thread %q can't be opened", item.ID)
+	}
+	// The resumed segment is where the turn runs, so it decides the state and the time
+	if item.State != Running {
+		t.Errorf("state = %v, want the resumed segment's", item.State)
+	}
+	if got[0].activityTs != nowTime().Add(-time.Minute).UnixMilli() {
+		t.Errorf("activity = %v, want the resumed segment's", got[0].activityTs)
+	}
+	if item.Title != "redesign the last diagram" {
+		t.Errorf("title = %q", item.Title)
+	}
+}
+
+// Codex keeps its own name per thread, and it is the name the app shows; the first user
+// message is only a guess, and on a resumed segment it opens mid-thread
+func TestTitlePrefersCodexThreadName(t *testing.T) {
+	const segment = "01a15d62-98b3-75c3-9471-3d457a50c519"
+	meta := `{"type":"session_meta","payload":{"id":"` + threadA + `","cwd":"/Users/me/work/docs"}}` + "\n"
+	userMsg := `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"what the first message said"}]}}` + "\n"
+
+	home := t.TempDir()
+	day := filepath.Join(home, ".codex", "sessions", "2026", "10", "21")
+	stub := writeRollout(t, day, "rollout-2026-10-21T15-34-42-"+threadA+".jsonl", meta+userMsg)
+	resumed := writeRollout(t, day, "rollout-2026-10-21T15-35-05-"+threadA+"_"+segment+".jsonl",
+		meta+`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"follow up"}]}}`+"\n")
+	setModTime(t, stub, nowTime().Add(-2*time.Hour))
+	setModTime(t, resumed, nowTime().Add(-time.Minute))
+
+	s := &Scanner{
+		CodexRoot:    filepath.Join(home, ".codex", "sessions"),
+		CodexHome:    filepath.Join(home, ".codex"),
+		CodexHookDir: CodexHookDir(home),
+	}
+	if got := s.scanCodex(nowTime()); len(got) != 1 || got[0].item.Title != "what the first message said" {
+		t.Fatalf("without a name from Codex, the first message of the oldest segment is the title, got %+v", got)
+	}
+
+	index := `{"id":"` + threadA + `","thread_name":"重设计文章最后一张图","updated_at":"2026-10-21T07:35:02.220019Z"}` + "\n"
+	if err := os.WriteFile(CodexThreadIndexPath(s.CodexHome), []byte(index), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.scanCodex(nowTime()); len(got) != 1 || got[0].item.Title != "重设计文章最后一张图" {
+		t.Fatalf("Codex's own thread name should win, got %+v", got)
+	}
+}
+
+func setModTime(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProjectNameFallsBackToTitle(t *testing.T) {
 	if got := projectName("/Users/me/work/joyspace-ai", "t"); got != "joyspace-ai" {
 		t.Errorf("got %q", got)
@@ -310,7 +402,7 @@ func TestStripsSkillLinkFromTitle(t *testing.T) {
 	}
 }
 
-func TestStripLeadingLinkKeepsPlainText(t *testing.T) {
+func TestStripLeadingLinksKeepsPlainText(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"[$s](/p/SKILL.md) do the thing", "do the thing"},
 		{"plain text", "plain text"},
@@ -318,8 +410,8 @@ func TestStripLeadingLinkKeepsPlainText(t *testing.T) {
 		{"[link only](/p/x)", "[link only](/p/x)"},
 	}
 	for _, c := range cases {
-		if got := stripLeadingLink(c.in); got != c.want {
-			t.Errorf("stripLeadingLink(%q) = %q, want %q", c.in, got, c.want)
+		if got := stripLeadingLinks(c.in); got != c.want {
+			t.Errorf("stripLeadingLinks(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

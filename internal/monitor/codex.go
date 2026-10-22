@@ -34,6 +34,9 @@ type CodexSignal struct {
 
 // CodexRollout is the part of a Codex thread's rollout log we care about
 type CodexRollout struct {
+	// ThreadID is the thread's identity. Resuming a thread writes another rollout for it,
+	// so several rollouts can carry the same id
+	ThreadID       string
 	Cwd            string
 	Title          string
 	LastEvent      TurnEvent
@@ -69,6 +72,12 @@ func CodexHooksPath(home string) string {
 // sits in the Codex home, the way the readers below take it
 func CodexGlobalStatePath(codexHome string) string {
 	return filepath.Join(codexHome, ".codex-global-state.json")
+}
+
+// CodexThreadIndexPath is the desktop app's thread index, which holds the name it shows for
+// each thread
+func CodexThreadIndexPath(codexHome string) string {
+	return filepath.Join(codexHome, "session_index.jsonl")
 }
 
 func ReadCodexSignal(dir, threadID string) (CodexSignal, bool) {
@@ -208,7 +217,7 @@ func ReadCodexRollout(path string) (CodexRollout, bool) {
 	var out CodexRollout
 	out.LastModifiedMs = info.ModTime().UnixMilli()
 
-	out.Cwd, out.Title, out.Subagent = codexHeader(f)
+	out.readHeader(f)
 
 	start := max(info.Size()-codexChunkBytes, 0)
 	tail := make([]byte, info.Size()-start)
@@ -226,13 +235,15 @@ func ReadCodexRollout(path string) (CodexRollout, bool) {
 	return out, true
 }
 
-// codexRecord decodes only the fields needed to judge turn progress
+// codexRecord decodes only the fields needed to place a rollout and judge turn progress
 type codexRecord struct {
 	Type    string `json:"type"`
 	Payload struct {
-		Type string `json:"type"`
-		Cwd  string `json:"cwd"`
-		Role string `json:"role"`
+		Type      string `json:"type"`
+		ID        string `json:"id"`
+		SessionID string `json:"session_id"`
+		Cwd       string `json:"cwd"`
+		Role      string `json:"role"`
 		// A non-empty parent_thread_id means a sub-agent thread, not a user-started session
 		ParentThreadID string `json:"parent_thread_id"`
 		Content        []struct {
@@ -242,11 +253,11 @@ type codexRecord struct {
 	} `json:"payload"`
 }
 
-// codexHeader takes the cwd from session_meta and the title from the first real user
-// message. Injected AGENTS.md and environment context can run to tens of KB, so keep
-// reading until the title shows up, but never past codexHeadBytes so a huge file can't
+// readHeader takes the thread's id and cwd from session_meta and the title from the first
+// real user message. Injected AGENTS.md and environment context can run to tens of KB, so
+// keep reading until the title shows up, but never past codexHeadBytes so a huge file can't
 // eat memory. A true subagent means a sub-agent thread the caller should skip
-func codexHeader(f *os.File) (cwd, title string, subagent bool) {
+func (r *CodexRollout) readHeader(f *os.File) {
 	reader := bufio.NewReaderSize(f, 64*1024)
 	read := 0
 	metaSeen := false
@@ -254,33 +265,33 @@ func codexHeader(f *os.File) (cwd, title string, subagent bool) {
 		line, err := reader.ReadBytes('\n')
 		read += len(line)
 		if len(bytes.TrimSpace(line)) > 0 {
-			var r codexRecord
-			if json.Unmarshal(line, &r) == nil {
-				switch r.Type {
+			var rec codexRecord
+			if json.Unmarshal(line, &rec) == nil {
+				switch rec.Type {
 				case "session_meta":
 					// A sub-agent rollout carries its own meta first and then replays the
 					// parent's, which has no parent_thread_id. Only the first meta says what
 					// this file is; a later one can only fill in a missing cwd
 					if !metaSeen {
 						metaSeen = true
-						subagent = r.Payload.ParentThreadID != ""
+						r.Subagent = rec.Payload.ParentThreadID != ""
+						r.ThreadID = cmp.Or(rec.Payload.ID, rec.Payload.SessionID)
 					}
-					cwd = cmp.Or(cwd, r.Payload.Cwd)
+					r.Cwd = cmp.Or(r.Cwd, rec.Payload.Cwd)
 				case "response_item":
-					if title == "" && r.Payload.Role == "user" {
-						title = codexUserText(r.Payload.Content)
+					if r.Title == "" && rec.Payload.Role == "user" {
+						r.Title = codexUserText(rec.Payload.Content)
 					}
 				}
 			}
 		}
-		if cwd != "" && title != "" {
+		if r.Cwd != "" && r.Title != "" {
 			break
 		}
 		if err != nil {
 			break
 		}
 	}
-	return cwd, title, subagent
 }
 
 // codexUserText picks out the real user input. Injected context also arrives with the
@@ -297,30 +308,31 @@ func codexUserText(blocks []struct {
 		if text == "" || strings.HasPrefix(text, "<") || strings.HasPrefix(text, "#") {
 			continue
 		}
-		return firstLine(stripLeadingLink(text))
+		return firstLine(stripLeadingLinks(text))
 	}
 	return ""
 }
 
-// stripLeadingLink drops a leading markdown link. When a skill is used the user message
-// reads "[$grill-me](/path/SKILL.md) body", and that path has no place in a title
-func stripLeadingLink(text string) string {
-	if !strings.HasPrefix(text, "[") {
-		return text
+// stripLeadingLinks drops the markdown links a user message can open with. When a skill is
+// used and a file is pasted, the message reads "[$grill-me](/path/SKILL.md) [doc](<doc>)
+// body", and those paths have no place in a title
+func stripLeadingLinks(text string) string {
+	for strings.HasPrefix(text, "[") {
+		close := strings.IndexByte(text, ']')
+		if close < 0 || close+1 >= len(text) || text[close+1] != '(' {
+			break
+		}
+		end := strings.IndexByte(text[close+2:], ')')
+		if end < 0 {
+			break
+		}
+		rest := strings.TrimSpace(text[close+2+end+1:])
+		if rest == "" {
+			break
+		}
+		text = rest
 	}
-	close := strings.IndexByte(text, ']')
-	if close < 0 || close+1 >= len(text) || text[close+1] != '(' {
-		return text
-	}
-	end := strings.IndexByte(text[close+2:], ')')
-	if end < 0 {
-		return text
-	}
-	rest := strings.TrimSpace(text[close+2+end+1:])
-	if rest == "" {
-		return text
-	}
-	return rest
+	return text
 }
 
 // codexLastEvent walks backwards for the newest record that says where the turn stands
@@ -378,6 +390,28 @@ func firstLine(text string) string {
 	return text
 }
 
+// CodexThreadNames reads the desktop app's thread index. It holds the name the app shows
+// for each thread, which is the title the user recognizes; the index appends a line per
+// rename, so the last one for an id wins
+func CodexThreadNames(codexHome string) map[string]string {
+	content, err := os.ReadFile(CodexThreadIndexPath(codexHome))
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(content), "\n") {
+		var entry struct {
+			ID   string `json:"id"`
+			Name string `json:"thread_name"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil || entry.ID == "" || entry.Name == "" {
+			continue
+		}
+		out[entry.ID] = entry.Name
+	}
+	return out
+}
+
 // UnreadCodexThreads reads the desktop app's unread set; it plays the same role as
 // lastFocusedAt does for Claude
 func UnreadCodexThreads(codexHome string) map[string]bool {
@@ -416,7 +450,29 @@ func anyCodexProcess() bool {
 	return false
 }
 
-// scanCodex turns each recent rollout into a session
+// codexThread gathers every rollout of one thread. Resuming a thread writes another
+// rollout instead of rewriting the old one, so a thread can own several files
+type codexThread struct {
+	// latest is the rollout of the segment the thread is running in now
+	latest CodexRollout
+	// title comes from the oldest segment that has one, since a resumed segment opens
+	// mid-thread
+	title   string
+	titleMs int64
+}
+
+func (t *codexThread) add(r CodexRollout) {
+	if r.LastModifiedMs >= t.latest.LastModifiedMs {
+		latest := r
+		latest.Cwd = cmp.Or(r.Cwd, t.latest.Cwd)
+		t.latest = latest
+	}
+	if r.Title != "" && (t.title == "" || r.LastModifiedMs < t.titleMs) {
+		t.title, t.titleMs = r.Title, r.LastModifiedMs
+	}
+}
+
+// scanCodex turns each recent thread into a session
 func (s *Scanner) scanCodex(now time.Time) []discovered {
 	root := s.CodexRoot
 	if root == "" {
@@ -427,10 +483,11 @@ func (s *Scanner) scanCodex(now time.Time) []discovered {
 	}
 	alive := anyCodexProcess()
 	unread := UnreadCodexThreads(s.CodexHome)
+	names := CodexThreadNames(s.CodexHome)
 	nowMs := now.UnixMilli()
 	cutoff := now.Add(-codexScanWindow)
 
-	var found []discovered
+	threads := map[string]*codexThread{}
 	for _, day := range recentDayDirs(root, 14) {
 		entries, err := os.ReadDir(day)
 		if err != nil {
@@ -445,10 +502,6 @@ func (s *Scanner) scanCodex(now time.Time) []discovered {
 			if err != nil || info.ModTime().Before(cutoff) {
 				continue
 			}
-			threadID := threadIDFromRollout(name)
-			if threadID == "" {
-				continue
-			}
 			rollout, ok := ReadCodexRollout(filepath.Join(day, name))
 			if !ok {
 				continue
@@ -457,30 +510,52 @@ func (s *Scanner) scanCodex(now time.Time) []discovered {
 			if rollout.Subagent {
 				continue
 			}
-
-			var signal *CodexSignal
-			if sig, ok := ReadCodexSignal(s.CodexHookDir, threadID); ok {
-				signal = &sig
+			// The file name is only a fallback: a resumed thread names its rollout after both
+			// the thread and the segment, and the meta keeps the thread id alone
+			threadID := cmp.Or(rollout.ThreadID, threadIDFromRollout(name))
+			if threadID == "" {
+				continue
 			}
-			cwd := cmp.Or(rollout.Cwd, signalCwd(signal))
-			title := cmp.Or(rollout.Title, "Untitled Session")
-
-			state := codexState(rollout, signal, unread[threadID], alive, nowMs)
-			activityAt := timestampTime(rollout.LastModifiedMs)
-			item := SessionItem{
-				ID:         threadID,
-				Source:     SourceCodex,
-				Title:      title,
-				State:      state,
-				WorkingDir: cwd,
-				ActivityAt: activityAt,
-				IsToday:    state == Running || state == Waiting || isSameLocalDay(activityAt, now),
+			if threads[threadID] == nil {
+				threads[threadID] = &codexThread{}
 			}
-			if state == Waiting {
-				item.WaitReason = WaitPermission
-			}
-			found = append(found, discovered{projectName(cwd, title), item, rollout.LastModifiedMs})
+			threads[threadID].add(rollout)
 		}
+	}
+
+	ids := make([]string, 0, len(threads))
+	for id := range threads {
+		ids = append(ids, id)
+	}
+	// Map order is random, and rows that tie on activity must not swap places between scans
+	slices.Sort(ids)
+
+	found := make([]discovered, 0, len(ids))
+	for _, threadID := range ids {
+		thread := threads[threadID]
+		rollout := thread.latest
+		var signal *CodexSignal
+		if sig, ok := ReadCodexSignal(s.CodexHookDir, threadID); ok {
+			signal = &sig
+		}
+		cwd := cmp.Or(rollout.Cwd, signalCwd(signal))
+		title := cmp.Or(names[threadID], thread.title, "Untitled Session")
+
+		state := codexState(rollout, signal, unread[threadID], alive, nowMs)
+		activityAt := timestampTime(rollout.LastModifiedMs)
+		item := SessionItem{
+			ID:         threadID,
+			Source:     SourceCodex,
+			Title:      title,
+			State:      state,
+			WorkingDir: cwd,
+			ActivityAt: activityAt,
+			IsToday:    state == Running || state == Waiting || isSameLocalDay(activityAt, now),
+		}
+		if state == Waiting {
+			item.WaitReason = WaitPermission
+		}
+		found = append(found, discovered{projectName(cwd, title), item, rollout.LastModifiedMs})
 	}
 	return found
 }
@@ -492,10 +567,12 @@ func signalCwd(s *CodexSignal) string {
 	return s.Cwd
 }
 
-// threadIDFromRollout pulls the thread ID out of rollout-<ISO time>-<threadId>.jsonl.
-// The timestamp contains hyphens too, so slice from the end by UUID segment count
+// threadIDFromRollout pulls the thread ID out of rollout-<ISO time>-<threadId>.jsonl,
+// dropping the _<segmentId> a resumed thread appends. The timestamp contains hyphens too,
+// so slice from the end by UUID segment count
 func threadIDFromRollout(name string) string {
 	base := strings.TrimSuffix(strings.TrimPrefix(name, "rollout-"), ".jsonl")
+	base, _, _ = strings.Cut(base, "_")
 	parts := strings.Split(base, "-")
 	// The timestamp is 2026-10-12T17-20-37, five segments; a UUID is five segments too
 	if len(parts) < 10 {
