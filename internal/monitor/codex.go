@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -308,9 +309,15 @@ func codexUserText(blocks []struct {
 		if text == "" || strings.HasPrefix(text, "<") || strings.HasPrefix(text, "#") {
 			continue
 		}
-		return firstLine(stripLeadingLinks(text))
+		return titleOf(text)
 	}
 	return ""
+}
+
+// titleOf picks the words of a message that belong in a title. Injected context opens it and
+// a pasted image leaves its path behind, and neither names the session
+func titleOf(text string) string {
+	return stripTrailingPaths(firstLine(stripLeadingPaths(stripLeadingLinks(text))))
 }
 
 // stripLeadingLinks drops the markdown links a user message can open with. When a skill is
@@ -333,6 +340,43 @@ func stripLeadingLinks(text string) string {
 		text = rest
 	}
 	return text
+}
+
+// stripLeadingPaths drops the paths a message can open with. A pasted image arrives as its
+// file path in plain text rather than as a link, and that path alone can fill a title, so the
+// words the user typed never show
+func stripLeadingPaths(text string) string {
+	for {
+		text = strings.TrimLeftFunc(text, unicode.IsSpace)
+		end := strings.IndexFunc(text, unicode.IsSpace)
+		if end < 0 {
+			end = len(text)
+		}
+		if end == 0 || !isAttachmentPath(text[:end]) {
+			return text
+		}
+		text = text[end:]
+	}
+}
+
+// isAttachmentPath tells a pasted path from a slash command: "/tdd" is a command the user
+// typed, "/var/folders/.../image.png" and "@/Users/me/notes.md" are paths
+func isAttachmentPath(token string) bool {
+	path := strings.TrimPrefix(token, "@")
+	return strings.HasPrefix(path, "/") && strings.Contains(path[1:], "/")
+}
+
+// stripTrailingPaths drops an attachment's path from the end of a line, where a paste that
+// came after the user's words leaves it
+func stripTrailingPaths(text string) string {
+	for {
+		text = strings.TrimRightFunc(text, unicode.IsSpace)
+		start := strings.LastIndexFunc(text, unicode.IsSpace) + 1
+		if !isAttachmentPath(text[start:]) {
+			return text
+		}
+		text = text[:start]
+	}
 }
 
 // codexLastEvent walks backwards for the newest record that says where the turn stands

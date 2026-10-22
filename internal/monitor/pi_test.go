@@ -51,6 +51,27 @@ func TestPiUserTitleIgnoresInjectedContext(t *testing.T) {
 	if got := piUserTitle("first line\nsecond line"); got != "first line" {
 		t.Errorf("first line = %q", got)
 	}
+	// A skill and a pasted image arrive in one message, and the image's temp path must not
+	// name the session
+	pasted := "<skill name=\"diagnosing-bugs\" location=\"/x/SKILL.md\">\nsteps\n</skill>\n\n" +
+		"/var/folders/c5/h0y/T/herdr-clipboard-images-502/client-1-clipboard-1792639061010435000-0.png 帮我分析一下这两个会话"
+	if got := piUserTitle(pasted); got != "帮我分析一下这两个会话" {
+		t.Errorf("pasted image = %q", got)
+	}
+	if got := piUserTitle("/var/folders/c5/h0y/T/x.png"); got != "" {
+		t.Errorf("image only = %q, want no title", got)
+	}
+	if got := piUserTitle("/tdd 按照 @docs/plan.md 完成实现"); got != "/tdd 按照 @docs/plan.md 完成实现" {
+		t.Errorf("slash command = %q", got)
+	}
+	// A paste that came after the words leaves its path at the end
+	trailing := piUserTitle("为什么这两个会话点不动 /var/folders/c5/h0y/T/herdr-clipboard-images-502/client-1-clipboard-1-0.png")
+	if trailing != "为什么这两个会话点不动" {
+		t.Errorf("trailing path = %q", trailing)
+	}
+	if got := piUserTitle("/var/folders/c5/h0y/T/x.png 两个都看看 /var/folders/c5/h0y/T/y.png"); got != "两个都看看" {
+		t.Errorf("both ends = %q", got)
+	}
 }
 
 func TestReadPiSessionTakesTheFirstUserMessage(t *testing.T) {

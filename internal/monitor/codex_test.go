@@ -402,6 +402,17 @@ func TestStripsSkillLinkFromTitle(t *testing.T) {
 	}
 }
 
+// The thread is named by what the user asked, not by the image path a paste put in front of it
+func TestStripsPastedImagePathFromTitle(t *testing.T) {
+	body := `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"/var/folders/c5/T/herdr-clipboard-images-1/client-1-clipboard-1-0.png why do these rows jump to one thread"}]}}` + "\n"
+	dir := t.TempDir()
+	path := writeRollout(t, dir, "rollout-2026-10-12T17-20-37-"+threadA+".jsonl", body)
+	got, _ := ReadCodexRollout(path)
+	if got.Title != "why do these rows jump to one thread" {
+		t.Errorf("title = %q", got.Title)
+	}
+}
+
 func TestStripLeadingLinksKeepsPlainText(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"[$s](/p/SKILL.md) do the thing", "do the thing"},
@@ -413,6 +424,49 @@ func TestStripLeadingLinksKeepsPlainText(t *testing.T) {
 		if got := stripLeadingLinks(c.in); got != c.want {
 			t.Errorf("stripLeadingLinks(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// A pasted image arrives as its temp path in plain text, and that path is long enough to be
+// the whole title
+func TestStripLeadingPaths(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/var/folders/c5/T/herdr-clipboard-images-1/client-1-clipboard-1-0.png why the two rows", "why the two rows"},
+		{"@/Users/me/notes.md what does this mean", "what does this mean"},
+		{"/var/folders/c5/T/x.png\nthe question on the next line", "the question on the next line"},
+		{"/var/folders/c5/T/x.png", ""},
+		{"/tdd 按照 @docs/plan.md 完成实现", "/tdd 按照 @docs/plan.md 完成实现"},
+		{"@spark-go have a look", "@spark-go have a look"},
+		{"plain text", "plain text"},
+	}
+	for _, c := range cases {
+		if got := stripLeadingPaths(c.in); got != c.want {
+			t.Errorf("stripLeadingPaths(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A paste that comes after the words leaves its path at the end of the line
+func TestStripTrailingPaths(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"why the two rows /var/folders/c5/T/herdr-clipboard-images-1/client-1-clipboard-1-0.png", "why the two rows"},
+		{"keep the file /Users/me/notes.md out", "keep the file /Users/me/notes.md out"},
+		{"and this one @/Users/me/notes.md", "and this one"},
+		{"plain text", "plain text"},
+		{"/var/folders/c5/T/x.png", ""},
+	}
+	for _, c := range cases {
+		if got := stripTrailingPaths(c.in); got != c.want {
+			t.Errorf("stripTrailingPaths(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// Both ends at once, as a message with two pastes reads
+func TestTitleOfDropsThePathsAtEitherEnd(t *testing.T) {
+	in := "/var/folders/c5/T/x.png both of them /var/folders/c5/T/y.png"
+	if got := titleOf(in); got != "both of them" {
+		t.Errorf("titleOf(%q) = %q", in, got)
 	}
 }
 

@@ -461,7 +461,7 @@ func piUserTitle(text string) string {
 	if text == "" || strings.HasPrefix(text, "<") || strings.HasPrefix(text, "#") {
 		return ""
 	}
-	return firstLine(stripLeadingLinks(text))
+	return titleOf(text)
 }
 
 func decodePiRecord(line []byte) (piRecord, bool) {
