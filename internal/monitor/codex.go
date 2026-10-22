@@ -65,9 +65,10 @@ func CodexHooksPath(home string) string {
 	return filepath.Join(CodexHome(home), "hooks.json")
 }
 
-// CodexGlobalStatePath records which threads the desktop app still considers unread
-func CodexGlobalStatePath(home string) string {
-	return filepath.Join(CodexHome(home), ".codex-global-state.json")
+// CodexGlobalStatePath records which threads the desktop app still considers unread. It
+// sits in the Codex home, the way the readers below take it
+func CodexGlobalStatePath(codexHome string) string {
+	return filepath.Join(codexHome, ".codex-global-state.json")
 }
 
 func ReadCodexSignal(dir, threadID string) (CodexSignal, bool) {
@@ -379,8 +380,8 @@ func firstLine(text string) string {
 
 // UnreadCodexThreads reads the desktop app's unread set; it plays the same role as
 // lastFocusedAt does for Claude
-func UnreadCodexThreads(home string) map[string]bool {
-	content, err := os.ReadFile(CodexGlobalStatePath(home))
+func UnreadCodexThreads(codexHome string) map[string]bool {
+	content, err := os.ReadFile(CodexGlobalStatePath(codexHome))
 	if err != nil {
 		return nil
 	}

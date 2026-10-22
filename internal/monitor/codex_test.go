@@ -124,18 +124,15 @@ func TestReadsCodexSignal(t *testing.T) {
 }
 
 func TestReadsUnreadThreads(t *testing.T) {
-	home := t.TempDir()
-	if got := UnreadCodexThreads(home); got != nil {
+	codexHome := t.TempDir()
+	if got := UnreadCodexThreads(codexHome); got != nil {
 		t.Errorf("missing state should give nothing, got %v", got)
 	}
-	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	state := `{"electron-thread-read-state-v1":{"version":1,"unreadByIdentity":{"ident":{"local":["` + threadA + `"]}}}}`
-	if err := os.WriteFile(CodexGlobalStatePath(home), []byte(state), 0o644); err != nil {
+	if err := os.WriteFile(CodexGlobalStatePath(codexHome), []byte(state), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := UnreadCodexThreads(home); !got[threadA] {
+	if got := UnreadCodexThreads(codexHome); !got[threadA] {
 		t.Errorf("thread should be unread, got %v", got)
 	}
 }
