@@ -114,8 +114,8 @@ func demoApp() *app {
 		{ProjectName: "docs-site", Sessions: []monitor.SessionItem{
 			{ID: "local_6", Title: "Rewrite the getting started guide", State: monitor.Unread, ActivityAt: ago(38 * time.Minute), IsToday: true},
 			{ID: "local_7", Title: "Add search to the API reference", State: monitor.Completed, ActivityAt: ago(75 * time.Hour)},
-			// No live signal: pi ran this one in a terminal spark can't see
-			{ID: "01a13919-4037-72b8-8b7e-c47d3459020f", Source: monitor.SourcePi, Title: "Trace the slow ranking query", State: monitor.Completed, NoSignal: true, ActivityAt: ago(11 * time.Hour), IsToday: true},
+			// pi is sitting at its prompt in a terminal, so the row has no pane to jump to
+			{ID: "01a13919-4037-72b8-8b7e-c47d3459020f", Source: monitor.SourcePi, Title: "Trace the slow ranking query", State: monitor.Completed, ActivityAt: ago(11 * time.Hour), IsToday: true},
 		}},
 		{ProjectName: "search-api", Sessions: []monitor.SessionItem{
 			{ID: "local_9", Title: "Pick an embedding model", State: monitor.Waiting, WaitReason: monitor.WaitQuestion, ActivityAt: ago(8 * time.Minute), IsToday: true},

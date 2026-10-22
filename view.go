@@ -728,11 +728,16 @@ var (
 )
 
 func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, st rowStyle, now time.Time) {
-	row := ui.Row(c).Height(st.height).Gap(st.gap).Padding(0, st.padding).Radius(st.radius).Cursor(ui.CursorPointer).
+	row := ui.Row(c).Height(st.height).Gap(st.gap).Padding(0, st.padding).Radius(st.radius).
 		Label(s.Title + ", " + s.State.String())
 	hovered := row.Hovered()
-	hoverFill(row, hovered, p.rowHover)
-	row.OnClick(func() { jumpToSession(c, s) })
+	// A row is a target only where clicking goes somewhere: a pi session outside Herdr has
+	// no window for spark to bring forward
+	if s.Jumpable() {
+		row.Cursor(ui.CursorPointer)
+		row.OnClick(func() { jumpToSession(c, s) })
+		hoverFill(row, hovered, p.rowHover)
+	}
 
 	when := relativeTime(s.ActivityAt, now)
 	switch {
@@ -780,17 +785,12 @@ func hoverFill(row ui.Element, hovered bool, color ui.Color) {
 	}
 }
 
-// trailing shows how long ago by default, swapping to a jump arrow on hover. A pi session
-// spark can't open keeps its time, unless nothing is reporting on it at all, which is worth
-// saying: the row can only tell that the turn is over
+// trailing shows how long ago by default, swapping to a jump arrow on hover when clicking
+// the row goes somewhere
 func trailing(c *ui.Context, p palette, hovered bool, when string, size float32, s monitor.SessionItem) {
 	label := when
-	switch {
-	case !hovered:
-	case s.Jumpable():
+	if hovered && s.Jumpable() {
 		label = "→"
-	case s.NoSignal:
-		label = "no live signal"
 	}
 	ui.Text(c, label).Shrink(0).FontSize(size).FontFeatures("tnum").TextColor(p.sec)
 }

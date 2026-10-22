@@ -200,7 +200,7 @@ func TestScanRealSessions(t *testing.T) {
 			// found: a pane means clicking the row can go there
 			extra := ""
 			if s.Source == SourcePi {
-				extra = fmt.Sprintf(" pane=%q live=%v", s.Pane, !s.NoSignal)
+				extra = fmt.Sprintf(" pane=%q", s.Pane)
 			}
 			t.Logf("  - [%v] %s (%v, PID: %d, today=%v%s)", s.State, s.Title, s.Source, s.PID, s.IsToday, extra)
 		}

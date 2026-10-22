@@ -599,6 +599,13 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 			if info.ModTime().Before(cutoff) && !hasReceipt && !hosted {
 				continue
 			}
+			// A pi row is only worth showing while something is behind it: Herdr hosts its
+			// pane, or the extension says its process is alive. A session whose pi is gone can
+			// be neither opened nor reported on -- its turn can't move -- so it is history, and
+			// a row nothing can act on is noise
+			if !hosted && (!hasReceipt || receipt.Status == piExited) {
+				continue
+			}
 			session, ok := s.readPiSession(path)
 			if !ok || session.Cwd == "" {
 				continue
@@ -628,9 +635,6 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 				ActivityAt: activityAt,
 				IsToday:    state == Running || state == Waiting || isSameLocalDay(activityAt, now),
 				Pane:       herdr[path].PaneID,
-				// Without a live signal the row says only that the turn is over; the view
-				// uses this to say as much when the pointer is on it
-				NoSignal: !ok,
 			}
 			found = append(found, discovered{projectName(session.Cwd, session.Title), item, session.ActivityAt})
 		}

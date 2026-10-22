@@ -398,7 +398,7 @@ func piWaiting(a *app, pane string) {
 		{ID: "01a13f06-5941-7138-a5d7-056c36fd2894", Source: monitor.SourcePi, Title: "Backfill events for September",
 			State: monitor.Unread, ActivityAt: time.Now().Add(-38 * time.Minute), IsToday: true},
 		{ID: "01a13919-4037-72b8-8b7e-c47d3459020f", Source: monitor.SourcePi, Title: "Trace the slow ranking query",
-			State: monitor.Completed, NoSignal: true, ActivityAt: time.Now().Add(-11 * time.Hour), IsToday: true},
+			State: monitor.Completed, ActivityAt: time.Now().Add(-11 * time.Hour), IsToday: true},
 	}})
 }
 

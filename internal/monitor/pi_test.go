@@ -263,9 +263,15 @@ func TestScanPiSkipsSubagentSessions(t *testing.T) {
 	cwd := "/Users/me/work/spark-go"
 	// Timestamps relative to now: a session touched now is today's whatever the hour
 	stamp := time.Now().UTC().Format(time.RFC3339Nano)
-	writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_top.jsonl",
+	top := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_top.jsonl",
 		piHeader("top", cwd)+
 			`{"type":"message","id":"m1","timestamp":"`+stamp+`","message":{"role":"user","content":"real session"}}`+"\n")
+	// A row is only listed while something is behind it, and here the extension reports the
+	// pi process as alive
+	receiptDir := filepath.Join(root, "receipts")
+	writePiReceipt(t, receiptDir, "top.json", `{"sessionId":"top","sessionPath":"`+top+`","pid":`+
+		strconv.Itoa(os.Getpid())+
+		`,"state":"idle","updatedAtMs":`+strconv.FormatInt(time.Now().UnixMilli(), 10)+`}`)
 	// A sub-agent session lives in a directory under its parent's file
 	sub := filepath.Join(root, "--Users-me-work-spark-go--", "2026-10-15T10-00-00-000Z_top", "run-0")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -275,7 +281,7 @@ func TestScanPiSkipsSubagentSessions(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	s := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: filepath.Join(root, "missing.sock")}
+	s := &Scanner{PiRoot: root, PiReceiptDir: receiptDir, HerdrSocket: filepath.Join(root, "missing.sock")}
 	found := s.scanPi(time.Now())
 	if len(found) != 1 {
 		t.Fatalf("found %d sessions, want the top-level one only: %+v", len(found), found)
@@ -283,8 +289,8 @@ func TestScanPiSkipsSubagentSessions(t *testing.T) {
 	if found[0].item.Title != "real session" || found[0].project != "spark-go" {
 		t.Errorf("session = %+v in %q", found[0].item, found[0].project)
 	}
-	if !found[0].item.NoSignal || found[0].item.Source != SourcePi {
-		t.Errorf("a pi session with no source behind it = %+v", found[0].item)
+	if found[0].item.ID != "top" {
+		t.Errorf("listed %q, want the top-level session only", found[0].item.ID)
 	}
 	if found[0].item.IsToday != true {
 		t.Error("a session touched now is today's")
@@ -323,9 +329,6 @@ func TestScanPiBelievesAReceiptFromALiveProcess(t *testing.T) {
 	item := found[0].item
 	if item.State != Waiting || item.WaitReason != WaitQuestion {
 		t.Errorf("state = %v/%v, want Waiting on a question", item.State, item.WaitReason)
-	}
-	if item.NoSignal {
-		t.Error("a session reported by the extension has a signal")
 	}
 }
 
@@ -377,15 +380,14 @@ func serveHerdr(t *testing.T, path, reply string) {
 func TestScanPiTakesHerdrsWordForUnseenWork(t *testing.T) {
 	cwd := "/Users/me/work/spark-go"
 	cases := []struct {
-		status   string
-		want     TaskState
-		noSignal bool
+		status string
+		want   TaskState
 	}{
-		{"working", Running, false},
-		{"done", Unread, false},
-		{"idle", Completed, false},
+		{"working", Running},
+		{"done", Unread},
+		{"idle", Completed},
 		// An agent Herdr cannot classify is not proof that the work finished
-		{"unknown", Completed, true},
+		{"unknown", Completed},
 	}
 	for _, c := range cases {
 		t.Run(c.status, func(t *testing.T) {
@@ -406,9 +408,6 @@ func TestScanPiTakesHerdrsWordForUnseenWork(t *testing.T) {
 			item := found[0].item
 			if item.State != c.want {
 				t.Errorf("state = %v, want %v", item.State, c.want)
-			}
-			if item.NoSignal != c.noSignal {
-				t.Errorf("no signal = %v, want %v", item.NoSignal, c.noSignal)
 			}
 			if item.Pane != "w4:pC" {
 				t.Errorf("pane = %q, want the pane Herdr reports", item.Pane)
@@ -483,6 +482,35 @@ func TestScanPiFadesTheBadgeOnASessionNothingReportsLooking(t *testing.T) {
 	}
 }
 
+// A pi session whose process has gone can be neither opened nor told anything about, and one
+// nothing reports on can't even be described: both are history, not rows to show
+func TestScanPiLeavesOutHistory(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/Users/me/work/spark-go"
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+	line := func(id string) string {
+		return piHeader(id, cwd) +
+			`{"type":"message","id":"m1","timestamp":"` + stamp + `","message":{"role":"user","content":"go"}}` + "\n"
+	}
+	gone := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_gone.jsonl", line("gone"))
+	writePiSession(t, root, cwd, "2026-10-15T10-01-00-000Z_unreported.jsonl", line("unreported"))
+	live := writePiSession(t, root, cwd, "2026-10-15T10-02-00-000Z_live.jsonl", line("live"))
+
+	receiptDir := filepath.Join(root, "receipts")
+	receipt := func(id, path, state string) string {
+		return `{"sessionId":"` + id + `","sessionPath":"` + path + `","pid":` + strconv.Itoa(os.Getpid()) +
+			`,"state":"` + state + `","updatedAtMs":` + strconv.FormatInt(time.Now().UnixMilli(), 10) + `}`
+	}
+	writePiReceipt(t, receiptDir, "gone.json", receipt("gone", gone, "exited"))
+	writePiReceipt(t, receiptDir, "live.json", receipt("live", live, "idle"))
+
+	s := &Scanner{PiRoot: root, PiReceiptDir: receiptDir, HerdrSocket: filepath.Join(root, "missing.sock")}
+	found := s.scanPi(time.Now())
+	if len(found) != 1 || found[0].item.ID != "live" {
+		t.Fatalf("found %+v, want only the session whose pi is still running", found)
+	}
+}
+
 // A rename, a model switch or an extension's own state are not results: unread timing has to
 // go by the conversation, or every /name would raise a New badge
 func TestPiTurnTimeIgnoresMetadata(t *testing.T) {
@@ -524,7 +552,11 @@ func TestScanPiFindsARenameInWhatWasAppended(t *testing.T) {
 	path := writePiSession(t, root, cwd, "2026-10-15T10-00-00-000Z_abc.jsonl",
 		piHeader("abc", cwd)+
 			`{"type":"message","id":"m1","timestamp":"`+stamp+`","message":{"role":"user","content":"first words"}}`+"\n")
-	s := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: filepath.Join(root, "missing.sock")}
+	receiptDir := filepath.Join(root, "receipts")
+	writePiReceipt(t, receiptDir, "abc.json", `{"sessionId":"abc","sessionPath":"`+path+`","pid":`+
+		strconv.Itoa(os.Getpid())+
+		`,"state":"idle","updatedAtMs":`+strconv.FormatInt(time.Now().UnixMilli(), 10)+`}`)
+	s := &Scanner{PiRoot: root, PiReceiptDir: receiptDir, HerdrSocket: filepath.Join(root, "missing.sock")}
 
 	title := func() string {
 		found := s.scanPi(time.Now())
@@ -590,9 +622,6 @@ func TestScanPiKeepsASessionSomethingStillReports(t *testing.T) {
 	if found[0].item.State != Waiting || found[0].item.WaitReason != WaitQuestion {
 		t.Errorf("state = %v/%v, want Waiting on a question", found[0].item.State, found[0].item.WaitReason)
 	}
-	if found[0].item.NoSignal {
-		t.Error("the extension is reporting on it, so the row doesn't claim it has no signal")
-	}
 }
 
 // pi records a cleared name as an empty one, and its own reader takes the latest entry as the
@@ -619,6 +648,10 @@ func TestPiSessionsHonourAClearedName(t *testing.T) {
 		t.Errorf("title = %q, want the first user message after the clear", session.Title)
 	}
 	s := &Scanner{PiRoot: root, PiReceiptDir: filepath.Join(root, "receipts"), HerdrSocket: filepath.Join(root, "missing.sock")}
+	// The extension still reports the pi behind it, which is what keeps the row in the list
+	writePiReceipt(t, filepath.Join(root, "receipts"), "abc.json", `{"sessionId":"abc","sessionPath":"`+path+`","pid":`+
+		strconv.Itoa(os.Getpid())+
+		`,"state":"idle","updatedAtMs":`+strconv.FormatInt(time.Now().UnixMilli(), 10)+`}`)
 	found := s.scanPi(time.Now())
 	if len(found) != 1 || found[0].item.Title != "first words" {
 		t.Errorf("scanned title = %q, want the clear to survive the cache", found[0].item.Title)

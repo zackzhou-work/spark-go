@@ -35,9 +35,9 @@ spark watches three agents: Claude Desktop's Code tab, Codex, and pi.
 
 ### pi
 
-- **Sessions**: pi writes `~/.pi/agent/sessions/--<cwd>--/<time>_<sessionId>.jsonl`. The header carries the working directory, which names the project; the title is the name from `/name` if there is one, and otherwise the first user message. Sub-agent sessions live in a directory under their parent's file and are left out.
+- **Sessions**: pi writes `~/.pi/agent/sessions/--<cwd>--/<time>_<sessionId>.jsonl`. The header carries the working directory, which names the project; the title is the name from `/name` if there is one, and otherwise the first user message. Sub-agent sessions live in a directory under their parent's file and are left out. A session gets a row only while something is behind it — a Herdr pane, or a live pi process the extension reports — because a session whose pi has gone can be neither opened nor asked anything.
 - **Herdr**: when pi runs in [Herdr](https://herdr.dev), spark reads Herdr's own agent list: `agent.list` over its socket at `~/.config/herdr/herdr.sock`, no CLI and no `PATH` lookup. Herdr knows the session file behind every pane, so `working`, `blocked` and `idle` come from there. Clicking a pi row focuses that pane, which is also how Herdr marks it seen.
-- **Extension (optional)**: **Install for pi** in the banner writes `~/.pi/agent/extensions/spark-pi.ts`, and pi's own events then report the state from the process itself, including what a blocking dialog is asking for. That is what covers a pi session running in an IDE or a plain terminal. Without it, a pi session outside Herdr is only ever shown as finished: spark doesn't guess at a live state it can't see.
+- **Extension (optional)**: **Install for pi** in the banner writes `~/.pi/agent/extensions/spark-pi.ts`, and pi's own events then report the state from the process itself, including what a blocking dialog is asking for. That is what covers a pi session running in an IDE or a plain terminal. Without it, a pi session outside Herdr has nothing reporting on it, so spark leaves it out rather than guess at a state it can't see.
 - **Read state**: pi has no desktop app to mark a session read. In Herdr, `idle` and `done` already tell that apart — Herdr marks a tab seen as soon as it is focused, so its `idle` is a session you have looked at and its `done` is work that finished while you weren't — which is what spark shows as Unread. A session only the extension reports has nothing to go on but submitted prompts, and those come before the turn ran, so its New badge fades after 30 minutes rather than hanging on a session you walked away from.
 - **Boundaries**: only the local Herdr session is read, so sessions on a `herdr --machine` remote don't appear. Runs started with `--no-session` leave no file to scan, and a `--session-dir` or `PI_CODING_AGENT_SESSION_DIR` override is not followed. pi changes are noticed by the rescan that runs every few seconds rather than by file watching: pi keeps hundreds of session files, and watching a directory on macOS means watching every file in it.
 
@@ -54,7 +54,7 @@ The sidebar doesn't mark "waiting for permission" separately. spark adds it beca
 
 Click a project to see all its sessions. A session waiting on you gets a card there: **Respond/Answer in Claude**, **in Codex** or **in pi** jumps to it, **Later** puts the card away until the session moves again. A pi session spark can't open — one running in an IDE or a terminal without Herdr — still gets a card, because it needs you either way, but the card explains itself and offers only **Later**. Narrower than 340 points, the cards stack into a single column. The window doesn't shrink below 260 points wide.
 
-One thing pi rows can't say: hovering a pi row that nothing is reporting on shows `no live signal` where the time goes, because spark only knows the turn is over. Everywhere else the row shows a `→` on hover when clicking it goes somewhere.
+A row shows `→` on hover only when clicking it goes somewhere. A pi session in a terminal or an IDE has no window for spark to bring forward, so its row keeps the time and doesn't take the pointer.
 
 File watching on the session, transcript and hooks directories drives the scans, and a 5-second timer catches changes that touch no file, such as a process exiting or a pi session moving on.
 
@@ -90,7 +90,7 @@ Codex raises and focuses its own window; spark only opens the URL. A thread that
 
 **Multiple accounts aren't handled**: spark scans the sessions of every `<account>/<org>`, but the deep link only reaches those of the account signed in now.
 
-**Herdr's socket is not a public contract either.** `agent.list` and `agent.focus` are read straight off the socket API of Herdr 20261013.1, pinned by `internal/monitor/herdr_test.go` against a fake server rather than against a published schema. If Herdr changes a field, the scan finds no pi agents and pi sessions fall back to "no live signal" instead of breaking: nothing else in spark depends on it.
+**Herdr's socket is not a public contract either.** `agent.list` and `agent.focus` are read straight off the socket API of Herdr 20261013.1, pinned by `internal/monitor/herdr_test.go` against a fake server rather than against a published schema. If Herdr changes a field, the scan finds no pi agents and only the extension's reports are left: nothing else in spark depends on it.
 
 ## Installing the hook
 

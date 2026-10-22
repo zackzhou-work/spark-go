@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/zackzhou-work/spark-go/internal/monitor"
 )
 
@@ -164,24 +165,31 @@ func TestPiWaitingCardFocusesThePane(t *testing.T) {
 	}
 }
 
-func TestPiRowWithoutASignalSaysSoOnHoverOnly(t *testing.T) {
+// A pi session spark can't open is not a target: the pointer stays an arrow, hovering shows
+// no jump, and the waiting card is where the reason lives
+func TestPiRowSparkCantOpenIsntATarget(t *testing.T) {
+	running := piWaitingSession("def", "Run the migration", "")
+	running.State, running.WaitReason = monitor.Running, monitor.WaitPermission
 	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "spark-go", Sessions: []monitor.SessionItem{
-		{ID: "abc", Source: monitor.SourcePi, Title: "Rewrite the guide", State: monitor.Completed,
-			NoSignal: true, ActivityAt: time.Now().Add(-time.Hour), IsToday: true},
-	}}}}
+		piWaitingSession("abc", "Rewrite the guide", ""),
+		running,
+	}}}, project: "spark-go"}
 	tt := newViewTester(a, 360, 640)
-	if tt.HasText("no live signal") {
-		t.Fatal("the hint belongs on hover, not in a resting view")
+	if !tt.HasText("Waiting in a terminal spark can’t reach") {
+		t.Fatalf("the card should say why it can't be opened; it shows %q", tt.Texts())
 	}
 
-	rect, ok := tt.Find("Rewrite the guide, Completed")
+	rect, ok := tt.Find("Run the migration, Running")
 	if !ok {
 		t.Fatalf("no row found; it shows %q", tt.Texts())
 	}
 	tt.Move(rect.X+rect.W/2, rect.Y+rect.H/2)
 	tt.Frame()
-	if !tt.HasText("no live signal") {
-		t.Errorf("hovering should explain itself; it shows %q", tt.Texts())
+	if got := tt.Cursor(); got != ui.CursorDefault {
+		t.Error("a row with nowhere to go shouldn't offer the pointer")
+	}
+	if tt.HasText("→") {
+		t.Error("no arrow for a row with no destination")
 	}
 }
 

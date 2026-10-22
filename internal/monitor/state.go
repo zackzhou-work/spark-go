@@ -94,9 +94,6 @@ type SessionItem struct {
 	IsToday    bool
 	// Pane is the Herdr pane hosting the session, empty when there is nothing to focus
 	Pane string
-	// NoSignal marks a pi session nothing is reporting on: spark only knows its turn is
-	// over, so the row says so instead of guessing that it is running
-	NoSignal bool
 }
 
 type ProjectGroup struct {
