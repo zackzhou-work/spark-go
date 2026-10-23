@@ -20,6 +20,9 @@ const (
 	moodNeedsYou mood = iota
 	moodWorking
 	moodToRead
+	// moodUnknown is a project whose sessions spark can't read: it must not wear the caught-up
+	// face, because nothing says those sessions are done
+	moodUnknown
 	moodCaughtUp
 	moodCount
 )
@@ -55,8 +58,12 @@ func projectLook(g monitor.ProjectGroup) (mood, prop) {
 			}
 		case monitor.Unread:
 			p.count++
-			if m == moodCaughtUp {
+			if m == moodCaughtUp || m == moodUnknown {
 				m = moodToRead
+			}
+		case monitor.Unknown:
+			if m == moodCaughtUp {
+				m = moodUnknown
 			}
 		}
 	}
@@ -510,6 +517,15 @@ func paintFace(pt *ui.Painter, base *shape, p pose, line ui.Color) {
 		mouth := layer(false)
 		mouth.arc(0, 5, 4.5, 4.5)
 		pt.StrokePath(&mouth.path, 3*base.u, line)
+	case moodUnknown:
+		// A level stare and a flat mouth: nothing to report, and it doesn't pretend otherwise
+		lids := layer(false)
+		lids.pill(-11.5, -1.5, 11, 3, 0)
+		lids.pill(11.5, -1.5, 11, 3, 0)
+		pt.FillPath(&lids.path, line)
+		mouth := layer(false)
+		mouth.pill(0, 6, 9, 2.5, 0)
+		pt.FillPath(&mouth.path, line)
 	default:
 		lids := layer(false)
 		lids.pill(-11.5, -0.5, 13, 3, 0)

@@ -124,9 +124,12 @@ func layoutFor(w float32) layout {
 }
 
 type app struct {
-	win    *mygo.Window
-	groups []monitor.ProjectGroup
-	filter int
+	win *mygo.Window
+	// scanner is what the setup notices ask about a source's own reporting; a view build never
+	// touches it
+	scanner *monitor.Scanner
+	groups  []monitor.ProjectGroup
+	filter  int
 	// A non-empty project shows that project's detail page
 	project string
 	pinned  bool
@@ -144,6 +147,14 @@ type app struct {
 	piState       monitor.PiExtensionState
 	piInstalledAt time.Time
 	piReported    bool
+	// cursorState is spark's hooks file for Cursor on disk, cursorDetected says Cursor is
+	// installed at all, and cursorReported whether the helper has written an event. cursorError
+	// keeps a failed install visible without pretending it worked
+	cursorState           monitor.CursorHookState
+	cursorDetected        bool
+	cursorReported        bool
+	cursorError           string
+	cursorNoticeDismissed bool
 	// piNoticeDismissed is the install the setup notice was dismissed for, so a later install
 	// brings it back
 	piNoticeDismissed time.Time
@@ -341,6 +352,7 @@ func (a *app) todayPage(c *ui.Context, p palette, l layout, width float32) {
 			ui.Column(c).Padding(0, 10).Gap(8).Children(func() {
 				pageHeading(c, p, l, "Your agents, today.")
 				a.piSetupNotice(c, p)
+				a.cursorSetupNotice(c, p)
 				for _, card := range needs {
 					a.needsStack(c.Key(card.group.ProjectName), p, card)
 				}
@@ -356,7 +368,7 @@ func (a *app) todayPage(c *ui.Context, p palette, l layout, width float32) {
 				ui.Column(c).Padding(14, 6, 16, 6).Children(func() {
 					sectionLabel(c, p, "Recent").Padding(0, 8, 6, 8)
 					for _, s := range recent {
-						sessionRow(c.Key(s.ID), p, s, narrowRows, now)
+						sessionRow(c.Key(sessionKey(s)), p, s, narrowRows, now)
 					}
 				})
 			}
@@ -366,6 +378,7 @@ func (a *app) todayPage(c *ui.Context, p palette, l layout, width float32) {
 		ui.Column(c).Padding(4, 12, 16, 12).Children(func() {
 			pageHeading(c, p, l, "Your agents, today.")
 			a.piSetupNotice(c, p)
+			a.cursorSetupNotice(c, p)
 			ui.Column(c).Gap(8).Padding(8, 0, 0, 0).Children(func() {
 				for _, card := range needs {
 					a.needsRow(c.Key(card.group.ProjectName), p, card)
@@ -612,7 +625,7 @@ func (a *app) projectPage(c *ui.Context, p palette, g monitor.ProjectGroup) {
 
 			for _, s := range g.Sessions {
 				if s.State == monitor.Waiting && !a.isSnoozed(s) {
-					a.waitingCard(c.Key(s.ID), p, s, now)
+					a.waitingCard(c.Key(sessionKey(s)), p, s, now)
 				}
 			}
 
@@ -626,7 +639,7 @@ func (a *app) projectPage(c *ui.Context, p palette, g monitor.ProjectGroup) {
 				ui.Column(c).Padding(4, 0, 0, 0).Children(func() {
 					sectionLabel(c, p, "Sessions")
 					for _, s := range ordered(rows) {
-						sessionRow(c.Key(s.ID), p, s, regularRows, now)
+						sessionRow(c.Key(sessionKey(s)), p, s, regularRows, now)
 					}
 				})
 			}
@@ -634,8 +647,14 @@ func (a *app) projectPage(c *ui.Context, p palette, g monitor.ProjectGroup) {
 	})
 }
 
+// sessionKey identifies a session across sources: two agents can hand out the same ID string, and
+// the snooze map and view keys must not confuse them
+func sessionKey(s monitor.SessionItem) string {
+	return s.Source.String() + ":" + s.ID
+}
+
 func (a *app) isSnoozed(s monitor.SessionItem) bool {
-	at, ok := a.snoozed[s.ID]
+	at, ok := a.snoozed[sessionKey(s)]
 	return ok && at.Equal(s.ActivityAt)
 }
 
@@ -668,7 +687,7 @@ func (a *app) waitingCard(c *ui.Context, p palette, s monitor.SessionItem, now t
 				if a.snoozed == nil {
 					a.snoozed = map[string]time.Time{}
 				}
-				a.snoozed[s.ID] = s.ActivityAt
+				a.snoozed[sessionKey(s)] = s.ActivityAt
 			})
 		})
 	})
@@ -685,7 +704,7 @@ func answerLabel(s monitor.SessionItem) string {
 }
 
 func projectSummary(g monitor.ProjectGroup) string {
-	var question, permission, working, unread, done int
+	var question, permission, working, unread, unknown, done int
 	for _, s := range g.Sessions {
 		switch s.State {
 		case monitor.Waiting:
@@ -698,6 +717,8 @@ func projectSummary(g monitor.ProjectGroup) string {
 			working++
 		case monitor.Unread:
 			unread++
+		case monitor.Unknown:
+			unknown++
 		default:
 			done++
 		}
@@ -713,6 +734,11 @@ func projectSummary(g monitor.ProjectGroup) string {
 	add(working, fmt.Sprintf("%d working", working))
 	add(unread, fmt.Sprintf("%d to read", unread))
 	add(done, fmt.Sprintf("%d done", done))
+	if len(parts) == 0 && unknown > 0 {
+		// Nothing here can be described, and "0 done" would describe it wrongly
+		return "Status unavailable"
+	}
+	add(unknown, fmt.Sprintf("%d unknown", unknown))
 	return strings.Join(parts, " · ")
 }
 
@@ -752,7 +778,7 @@ func (a *app) sessionSection(c *ui.Context, p palette, title string, sessions []
 		sectionLabel(c, p, title)
 		card(c, p).Padding(6).Children(func() {
 			for _, s := range sessions {
-				sessionRow(c.Key(s.ID), p, s, regularRows, now)
+				sessionRow(c.Key(sessionKey(s)), p, s, regularRows, now)
 			}
 		})
 	})
@@ -800,7 +826,7 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, st rowStyle, no
 		switch s.State {
 		case monitor.Unread:
 			title.TextColor(p.strong)
-		case monitor.Completed:
+		case monitor.Completed, monitor.Unknown:
 			title.TextColor(p.sec)
 		}
 		if when != "" || hovered {
@@ -878,6 +904,9 @@ func marker(c *ui.Context, p palette, state monitor.TaskState) {
 		dot.Radius(markerSize/2).Border(1.5, p.strong)
 	case monitor.Unread:
 		dot.Radius(markerSize / 2).Background(p.strong)
+	case monitor.Unknown:
+		// Faint and still: nothing is spinning, and nothing claims to be finished
+		dot.Radius(markerSize/2).Border(1.5, p.sec.Alpha(0.45))
 	default:
 		dot.Radius(markerSize/2).Border(1.5, p.sec)
 	}
@@ -977,7 +1006,8 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 				pillButton(c, p, "Show all sessions", true, 40, 14).OnClick(func() { a.filter = filterAll })
 			}
 		})
-		if !a.hookInstalled || !a.codexHookInstalled || !a.piHookInstalled || a.piNeedsReload() {
+		a.cursorSetupNotice(c, p)
+		if !a.hookInstalled || !a.codexHookInstalled || !a.piHookInstalled || a.piNeedsReload() || a.cursorNeedsSetup() {
 			a.hookBanner(c, p, l)
 		} else {
 			ui.Box(c).Height(12)
@@ -998,6 +1028,21 @@ func (a *app) piNeedsReload() bool {
 func (a *app) applySideState(side sideState) {
 	a.hookInstalled, a.codexHookInstalled = side.hooked, side.codexHooked
 	a.applyPiSetup(side)
+	a.applyCursorSetup(side)
+}
+
+// applyCursorSetup is the Cursor half of the side state: the hooks file, whether Cursor is there
+// at all, and whether its helper has reported anything yet. "Installed" only ever means the file
+// and the helper, never that Cursor is reporting
+func (a *app) applyCursorSetup(side sideState) {
+	if side.cursorState != a.cursorState {
+		// A change of state is a fresh subject for the notice, and an old failure has been dealt
+		// with one way or another
+		a.cursorNoticeDismissed = false
+		a.cursorError = ""
+	}
+	a.cursorState, a.cursorDetected = side.cursorState, side.cursorDetected
+	a.cursorReported = side.cursorReported
 }
 
 // applyPiSetup is the pi half, which is what installing or updating touches
@@ -1010,6 +1055,107 @@ func (a *app) applyPiSetup(side sideState) {
 // loaded it yet, which is what the reload line is about
 func (a *app) piInstallWaiting() bool {
 	return a.piHookInstalled && a.piState == monitor.PiExtensionCurrent && !a.piReported
+}
+
+// userHome is where the window looks for the files it reports on. Tests point it at a temporary
+// directory, so a click never reads or writes the real one
+var userHome = os.UserHomeDir
+
+// installCursorHooks copies the executable to Cursor's fixed helper path and merges spark's
+// events into the user's own hooks file. Tests replace it, so a click doesn't run this build's
+// binary or edit a real home
+var installCursorHooks = func(home string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return monitor.InstallCursorHooks(home, exe)
+}
+
+// cursorNeedsSetup reports whether Cursor is installed and its hooks are missing or stale. A file
+// spark can't parse is not something to rewrite, so it asks for nothing here
+func (a *app) cursorNeedsSetup() bool {
+	if !a.cursorDetected {
+		return false
+	}
+	return a.cursorState == monitor.CursorHooksMissing || a.cursorState == monitor.CursorHooksOutdated
+}
+
+func (a *app) cursorInstallLabel() string {
+	if a.cursorState == monitor.CursorHooksOutdated {
+		return "Update for Cursor"
+	}
+	return "Install for Cursor"
+}
+
+// installCursor writes the helper and the hooks, then re-reads what landed. A failure leaves the
+// state as it was: the button must not start saying the install is current when it isn't
+func (a *app) installCursor() {
+	home, err := userHome()
+	if err != nil {
+		return
+	}
+	if err := installCursorHooks(home); err != nil {
+		log.Printf("[Cursor] installing the hooks failed: %v", err)
+		a.cursorError = "Spark couldn't install its Cursor hooks."
+		return
+	}
+	a.cursorError = ""
+	a.applyCursorSetup(a.sideStateNow())
+}
+
+// sideStateNow re-reads the side state. Only a click does this; a view build never touches the
+// disk
+func (a *app) sideStateNow() sideState {
+	home, err := userHome()
+	if err != nil {
+		return sideState{}
+	}
+	if a.scanner == nil {
+		return readSideState(home)
+	}
+	return readSideStateFor(a.scanner, home)
+}
+
+// cursorSetupNotice is the line under a page's heading for Cursor: the install spark can do
+// itself, and the honest statement that nothing has been heard from it yet. The banner only
+// shows on an empty list, so a user with sessions in front of them needs this
+func (a *app) cursorSetupNotice(c *ui.Context, p palette) {
+	if !a.cursorDetected {
+		return
+	}
+	body, label := "", ""
+	switch {
+	case a.cursorError != "":
+		body = a.cursorError
+	case a.cursorState == monitor.CursorHooksBroken:
+		body = "Cursor’s hooks file can’t be read, so spark left it alone."
+	case a.cursorState == monitor.CursorHooksMissing:
+		body, label = "Spark can show Cursor’s desktop agents once its hooks are installed.", "Install for Cursor"
+	case a.cursorState == monitor.CursorHooksOutdated:
+		body, label = "The Spark hooks for Cursor are out of date.", "Update"
+	case a.cursorState == monitor.CursorHooksCurrent && !a.cursorReported:
+		if a.cursorNoticeDismissed {
+			return
+		}
+		body, label = "Cursor is set up. Start a new turn to verify reporting.", "Dismiss"
+	default:
+		return
+	}
+
+	ui.Row(c).Background(p.tile).Radius(14).Padding(10, 12).Gap(10).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, body).FontSize(12).LineHeight(1.5).TextColor(p.sec).Grow(1).MinWidth(0)
+		if label == "" {
+			return
+		}
+		pillButton(c, p, label, false, 24, 11).OnClick(func() {
+			if label == "Dismiss" {
+				a.cursorNoticeDismissed = true
+				return
+			}
+			a.installCursor()
+		})
+	})
 }
 
 // piSetupNotice is the line under a page's heading for the two things pi still needs from
@@ -1072,6 +1218,9 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 	if !a.piHookInstalled {
 		missing++
 	}
+	if a.cursorNeedsSetup() {
+		missing++
+	}
 	stacked := l == layoutNarrow || (missing > 1 && width < hookBannerInlineMinWidth)
 	reload := a.piNeedsReload()
 	prose := func(grow bool) {
@@ -1106,6 +1255,9 @@ func (a *app) hookBanner(c *ui.Context, p palette, l layout) {
 				}
 				a.codexHookInstalled = true
 			})
+		}
+		if a.cursorNeedsSetup() {
+			pillButton(c, p, a.cursorInstallLabel(), false, 32, 14).OnClick(func() { a.installCursor() })
 		}
 		if !a.piHookInstalled {
 			pillButton(c, p, "Install for pi", false, 32, 14).OnClick(func() {
@@ -1151,6 +1303,8 @@ func (card projectCard) status() string {
 		return "Working"
 	case moodToRead:
 		return fmt.Sprintf("%d to read", card.prop.count)
+	case moodUnknown:
+		return "Status unavailable"
 	default:
 		return "All caught up"
 	}
@@ -1192,7 +1346,7 @@ func unwaited(groups []monitor.ProjectGroup) []monitor.SessionItem {
 	return out
 }
 
-// ordered puts running first, then unread, then seen; newest first within a tier
+// ordered puts running first, then unread, then unknown, then seen; newest first within a tier
 func ordered(sessions []monitor.SessionItem) []monitor.SessionItem {
 	rank := func(s monitor.TaskState) int {
 		switch s {
@@ -1202,8 +1356,10 @@ func ordered(sessions []monitor.SessionItem) []monitor.SessionItem {
 			return 1
 		case monitor.Unread:
 			return 2
-		default:
+		case monitor.Unknown:
 			return 3
+		default:
+			return 4
 		}
 	}
 	out := slices.Clone(sessions)
@@ -1250,17 +1406,20 @@ func plural(n int, noun string) string {
 // jumpToSession takes the user back to a session: Claude and Codex have desktop deep links,
 // and a pi session is a pane in Herdr
 func jumpToSession(c *ui.Context, s monitor.SessionItem) {
-	if s.Source == monitor.SourcePi {
-		jumpToPi(s)
-		return
-	}
+	// Each source goes to its own app: a Cursor ID must never reach Claude's link builder
 	var (
 		url string
 		ok  bool
 	)
-	if s.Source == monitor.SourceCodex {
+	switch s.Source {
+	case monitor.SourcePi:
+		jumpToPi(s)
+		return
+	case monitor.SourceCodex:
 		url, ok = monitor.CodexDeeplink(s.ID)
-	} else {
+	case monitor.SourceCursor:
+		url, ok = monitor.CursorDeeplink(s.ID)
+	default:
 		url, ok = monitor.SessionDeeplink(s.ID)
 	}
 	if !ok {

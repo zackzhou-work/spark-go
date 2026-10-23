@@ -16,6 +16,9 @@ const (
 	Unread
 	// Completed: the turn ended and the result has been seen
 	Completed
+	// Unknown: the evidence on hand can't tell running from ended. Cursor reports nothing about
+	// a turn spark didn't watch, so the honest answer is that there isn't one
+	Unknown
 )
 
 func (s TaskState) String() string {
@@ -26,6 +29,8 @@ func (s TaskState) String() string {
 		return "Waiting"
 	case Unread:
 		return "Unread"
+	case Unknown:
+		return "Status unavailable"
 	default:
 		return "Completed"
 	}
@@ -35,10 +40,12 @@ func (s TaskState) String() string {
 func (s TaskState) priority() int {
 	switch s {
 	case Running:
-		return 3
+		return 4
 	case Waiting:
-		return 2
+		return 3
 	case Unread:
+		return 2
+	case Unknown:
 		return 1
 	default:
 		return 0
@@ -70,6 +77,8 @@ const (
 	SourceCodex
 	// SourcePi is a pi session, whether it runs in Herdr, an IDE or a plain terminal
 	SourcePi
+	// SourceCursor is a Cursor desktop local agent, read from its metadata and hooks
+	SourceCursor
 )
 
 func (s SessionSource) String() string {
@@ -78,6 +87,8 @@ func (s SessionSource) String() string {
 		return "Codex"
 	case SourcePi:
 		return "pi"
+	case SourceCursor:
+		return "Cursor"
 	}
 	return "Claude"
 }
@@ -94,6 +105,9 @@ type SessionItem struct {
 	IsToday    bool
 	// Pane is the Herdr pane hosting the session, empty when there is nothing to focus
 	Pane string
+	// CanJumpCursor is set by the Cursor scanner only for a session whose private Agent link
+	// this build has verified; the row is static otherwise
+	CanJumpCursor bool
 }
 
 type ProjectGroup struct {
@@ -150,6 +164,8 @@ func (s SessionItem) Jumpable() bool {
 		// A pi session has somewhere to go only while Herdr hosts its pane; anywhere else
 		// there is nothing to focus
 		return s.Pane != ""
+	case SourceCursor:
+		return s.CanJumpCursor
 	default:
 		return true
 	}

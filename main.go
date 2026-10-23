@@ -23,6 +23,13 @@ type sideState struct {
 	piInstalledAt time.Time
 	piReported    bool
 	piInstalled   bool
+
+	// cursorState is what spark's own Cursor hooks look like on disk, cursorDetected keeps the
+	// subject out of the window for people who don't run Cursor, and cursorReported says whether
+	// the installed helper has actually written an event
+	cursorState    monitor.CursorHookState
+	cursorDetected bool
+	cursorReported bool
 }
 
 func readSideState(home string) sideState {
@@ -34,10 +41,31 @@ func readSideState(home string) sideState {
 	}
 	side.piInstalledAt = monitor.PiInstalledAt(home)
 	side.piInstalled = side.piState == monitor.PiExtensionCurrent
+	side.cursorState = monitor.CursorHooksOnDisk(home)
+	side.cursorDetected = monitor.CursorPresent(home)
+	return side
+}
+
+// readSideStateFor adds what only the scanner knows: whether Cursor's helper has ever reported
+func readSideStateFor(scanner *monitor.Scanner, home string) sideState {
+	side := readSideState(home)
+	side.cursorReported = scanner.CursorReported()
 	return side
 }
 
 func main() {
+	// Cursor runs this executable as a hook. That path must not touch flags, the scanner or
+	// the app, so it comes first and returns
+	if isCursorHookRun(os.Args) {
+		os.Exit(runCursorHook(os.Stdin))
+	}
+	if isCursorInstallRun(os.Args) {
+		os.Exit(runCursorInstall())
+	}
+	if isCursorUninstallRun(os.Args) {
+		os.Exit(runCursorUninstall())
+	}
+
 	avatars := flag.Bool("avatars", false, "open the character preview instead of the monitor")
 	flag.Parse()
 	if *avatars {
@@ -55,6 +83,7 @@ func main() {
 		log.Printf("[Characters] reading %s failed, saving stays off: %v", charactersAt, charactersErr)
 	}
 	a := &app{
+		scanner:       scanner,
 		pinned:        true,
 		groups:        scanner.ScanAll(),
 		characters:    characters,
@@ -63,7 +92,7 @@ func main() {
 	}
 	// The state the window starts with is also the watcher's baseline, so the two cannot
 	// disagree about what has already been published
-	side := readSideState(home)
+	side := readSideStateFor(scanner, home)
 	a.applySideState(side)
 
 	mygo.App.WhenReady(func() {
@@ -110,7 +139,7 @@ func main() {
 			// the scan goroutine rather than in the view, which rebuilds several times for one
 			// event. A hook or a receipt can arrive without changing any group, so both have to
 			// be compared, not just the groups
-			side := readSideState(home)
+			side := readSideStateFor(scanner, home)
 			if reflect.DeepEqual(groups, last) && side == lastSide {
 				return true
 			}

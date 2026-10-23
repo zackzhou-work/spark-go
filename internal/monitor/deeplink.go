@@ -1,6 +1,9 @@
 package monitor
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 // Desktop session IDs are a local_ prefix plus 1..=64 alphanumerics or hyphens
 func isDesktopSessionID(id string) bool {
@@ -36,8 +39,27 @@ func CodexDeeplink(threadID string) (string, bool) {
 	return "codex://threads/" + threadID, true
 }
 
+// CursorDeeplink is Cursor's own Agent link: it raises the Agents window and asks it to
+// select the agent with this ID. The window is not the classic IDE tab, and an agent the
+// window hasn't loaded selects nothing, so this addresses a session rather than a
+// workspace
+func CursorDeeplink(composerID string) (string, bool) {
+	if !isUUIDShape(composerID) {
+		return "", false
+	}
+	u := url.URL{Scheme: "cursor", Host: "anysphere.cursor-deeplink", Path: "/agent"}
+	q := u.Query()
+	q.Set("id", composerID)
+	u.RawQuery = q.Encode()
+	return u.String(), true
+}
+
 // isCodexThreadID checks UUID shape: 8-4-4-4-12 hexadecimal
 func isCodexThreadID(id string) bool {
+	return isUUIDShape(id)
+}
+
+func isUUIDShape(id string) bool {
 	parts := strings.Split(id, "-")
 	if len(parts) != 5 {
 		return false

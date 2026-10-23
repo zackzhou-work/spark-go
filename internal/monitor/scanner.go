@@ -65,6 +65,26 @@ type Scanner struct {
 	piCache       map[string]piCached
 	herdrErrAt    time.Time
 	receiptPruned time.Time
+
+	// CursorAppPath is the installed app whose version decides whether the private Agent link is
+	// offered, CursorDB its read-only metadata, and CursorEventsRoot the hook reports spark's own
+	// helper writes
+	CursorAppPath    string
+	CursorDB         string
+	CursorUserDir    string
+	CursorEventsRoot string
+
+	cursorSnap     cursorSnapshot
+	cursorLog      CursorEventLog
+	cursorEvents   map[string][]CursorEvent
+	cursorRoots    map[string]string
+	cursorRootsAt  time.Time
+	cursorBuild    cursorBuild
+	cursorBuildAt  time.Time
+	cursorBuildOK  bool
+	cursorPrunedAt time.Time
+	cursorSawEvent bool
+	cursorStates   map[string]TaskState
 }
 
 func NewScanner() *Scanner {
@@ -83,6 +103,11 @@ func NewScanner() *Scanner {
 		PiReceiptDir: PiReceiptDir(home),
 		HerdrSocket:  HerdrSocketPath(home),
 		cpu:          newCPUSampler(),
+
+		CursorAppPath:    CursorAppPath(),
+		CursorDB:         CursorGlobalDBPath(home),
+		CursorUserDir:    CursorUserDir(home),
+		CursorEventsRoot: CursorEventsDir(home),
 	}
 }
 
@@ -95,7 +120,8 @@ func NewScanner() *Scanner {
 func (s *Scanner) WatchDirs() []string {
 	_ = os.MkdirAll(s.HooksDir, 0o755)
 	dirs := []string{s.SessionsDir, s.ProjectsRoot, s.HooksDir}
-	return append(dirs, s.codexWatchDirs()...)
+	dirs = append(dirs, s.codexWatchDirs()...)
+	return append(dirs, s.cursorWatchDirs()...)
 }
 
 // liveProcesses attributes each live claude core process to its host session ID through
@@ -265,14 +291,20 @@ func (s *Scanner) scanClaude() []discovered {
 	return found
 }
 
-// ScanAll merges the Claude, Codex and pi sides into one list
+// ScanAll merges the Claude, Codex, pi and Cursor sides into one list
 func (s *Scanner) ScanAll() []ProjectGroup {
-	now := time.Now()
+	return s.scanAll(time.Now())
+}
+
+// scanAll is ScanAll with the clock in hand, so the freshness rules can be tested
+func (s *Scanner) scanAll(now time.Time) []ProjectGroup {
 	found := s.scanClaude()
 	found = append(found, s.scanCodex(now)...)
 	found = append(found, s.scanPi(now)...)
+	found = append(found, s.scanCursor(now)...)
 	// Only a scan notices the receipts left behind by pi processes that are gone
 	s.pruneReceipts(now)
+	s.pruneCursorEvents(now)
 	return groupByProject(found)
 }
 

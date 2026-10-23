@@ -8,7 +8,7 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-var moodNames = [...]string{"Needs you", "Working", "To read", "All caught up"}
+var moodNames = [...]string{"Needs you", "Working", "To read", "Unknown", "All caught up"}
 
 // avatarGallery is the character preview window: expressions to switch between and watch
 // transition up top, one row per body shape with four expressions below

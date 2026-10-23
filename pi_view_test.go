@@ -241,7 +241,7 @@ func TestWaitingCardWithoutAJumpTargetOnlyOffersLater(t *testing.T) {
 	if err := tt.Click("Later"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := a.snoozed["abc"]; !ok {
+	if _, ok := a.snoozed[sessionKey(piWaitingSession("abc", "", ""))]; !ok {
 		t.Error("Later should put the card away")
 	}
 }
