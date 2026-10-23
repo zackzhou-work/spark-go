@@ -29,14 +29,57 @@ const (
 	ringGap, ringLine = 4.3, 1.1
 	dotGap, dotLine   = 2.5, 1.5
 
-	// editorHeight is the panel at its natural size: a title, the preview, the shapes, the
-	// colours and the buttons at the sizes below
-	editorHeight = 520
+	// The panel's own chrome, above and below the body it scrolls: the title row, the divider
+	// and the footer with its buttons
+	editorHeadPad, editorClose = 20, 26
+	editorFootPad, editorPill  = 15, 34
+	editorChrome               = editorHeadPad + editorClose + 1 + 2*editorFootPad + editorPill
+
+	// editorMargin is the room the panel keeps from the window's edges and from its title bar
+	editorMargin = 12
 
 	// gazeReach is how far the pupils go, in draft units, once the pointer is as far from
 	// the preview's centre as the preview is wide
 	gazeReachX, gazeReachY = 2.5, 3.2
 )
+
+// editorMetrics is how big the panel's parts are. A window too short for the full one gets the
+// compact one, which keeps the preview and a whole row of shapes in sight instead of cutting
+// both: the rest scrolls either way
+type editorMetrics struct {
+	preview, stagePad      float32
+	padX, blockGap, bottom float32
+	shapeH, shapeGap       float32
+	colourH, colourGap     float32
+}
+
+var (
+	editorFull = editorMetrics{
+		preview: 110, stagePad: 18, padX: 25, blockGap: 26, bottom: 26,
+		shapeH: 53, shapeGap: 10, colourH: 40, colourGap: 13,
+	}
+	editorCompact = editorMetrics{
+		preview: 84, stagePad: 12, padX: 20, blockGap: 20, bottom: 20,
+		shapeH: 50, shapeGap: 8, colourH: 36, colourGap: 10,
+	}
+)
+
+// height is the panel at this size: what it takes for the title, the whole body and the
+// buttons, without scrolling
+func (m editorMetrics) height() float32 {
+	stage := 2*m.stagePad + m.preview
+	shapes := 2*m.shapeH + m.shapeGap
+	dots := 2*m.colourH + m.colourGap
+	return stage + shapes + m.blockGap + dots + m.bottom + editorChrome
+}
+
+// fitEditor picks the profile for the room a window has between its title bar and its edges
+func fitEditor(room float32) editorMetrics {
+	if room < editorFull.height() {
+		return editorCompact
+	}
+	return editorFull
+}
 
 // characterDraft is what the editor is showing: the project it was opened on, the character
 // picked so far, and where each transition started. Saves never read it after the write
@@ -253,21 +296,26 @@ func (a *app) characterEditor(c *ui.Context, p palette) {
 	}
 	d.still = c.Preferences().ReduceMotion
 	w, h := c.Size()
-	width := min(float32(360), w-24)
+	width := min(float32(360), w-2*editorMargin)
+	// The window's own buttons sit over its content at the top left, so the dialog keeps clear
+	// of the title bar: a panel across the traffic lights reads as one control with them
+	bar := max(c.TitleBar().Height, float32(titleBarHeight)) + editorMargin
+	room := h - bar - editorMargin
+	m := fitEditor(room)
 
 	open := true
 	ui.DialogBase(c, &open, func(back, panel ui.Element) {
 		// The window behind is dimmed rather than removed: the character being replaced stays
-		// in sight next to its draft
-		back.Background(p.bg.Alpha(0.55))
+		// in sight next to its draft, and the title bar keeps to itself
+		back.Background(p.bg.Alpha(0.55)).Padding(bar, editorMargin, editorMargin, editorMargin)
 		// A short window opens the panel at the room it has and scrolls the choices, so the
 		// title, the buttons and the error stay in reach
-		panel.Bind(&a.editorPanel).Column().Width(width).MaxHeight(max(h-24, 160)).
+		panel.Bind(&a.editorPanel).Column().Width(width).Height(max(min(m.height(), room), 160)).
 			Radius(22).Border(1, p.line).Background(p.bg).Shadow(0, 20, 70, 0, ui.Hex("#000000").Alpha(0.16)).Clip()
 
-		ui.Row(c).Padding(20, 24, 0, 24).Gap(8).Children(func() {
+		ui.Row(c).Padding(editorHeadPad, 24, 0, 24).Gap(8).Children(func() {
 			ui.Text(c, "Custom character").Grow(1).FontSize(16).FontWeight(620).LetterSpacing(-0.4).TextColor(p.strong)
-			close := ui.ButtonBase(c).Size(26, 26).Radius(13).Label("Close").Disabled(d.saving)
+			close := ui.ButtonBase(c).Size(editorClose, editorClose).Radius(editorClose / 2).Label("Close").Disabled(d.saving)
 			if close.Hovered() {
 				close.Background(p.fill)
 			}
@@ -277,30 +325,32 @@ func (a *app) characterEditor(c *ui.Context, p palette) {
 
 		// A short window scrolls the character and the choices; the title, the ways out and
 		// the error stay where they can be reached
-		ui.Scroll(c).MaxHeight(max(h-24, 160) - 112).Children(func() {
+		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).Children(func() {
-				ui.Box(c).Padding(18, 20, 20, 20).Center().Children(func() { a.draftPreview(c, d) })
-				ui.Column(c).Padding(0, 25, 26, 25).Gap(26).Children(func() {
-					shapes := ui.Grid(c).Key("shapes").Columns(4).GapX(5).GapY(10).Role(ui.RoleRadioGroup)
+				ui.Box(c).Padding(m.stagePad, m.padX, m.stagePad, m.padX).Center().Children(func() {
+					a.draftPreview(c, d, m.preview)
+				})
+				ui.Column(c).Padding(0, m.padX, m.bottom, m.padX).Gap(m.blockGap).Children(func() {
+					shapes := ui.Grid(c).Key("shapes").Columns(4).GapX(5).GapY(m.shapeGap).Role(ui.RoleRadioGroup)
 					for i := range bodies {
-						shapes.Children(func() { a.shapeCell(c, p, d, i) })
+						shapes.Children(func() { a.shapeCell(c, p, d, i, m) })
 					}
-					dots := ui.Grid(c).Key("colours").Columns(12).GapY(13).Role(ui.RoleRadioGroup)
+					dots := ui.Grid(c).Key("colours").Columns(12).GapY(m.colourGap).Role(ui.RoleRadioGroup)
 					for i := range colours {
-						dots.Children(func() { a.colourCell(c, p, d, i) })
+						dots.Children(func() { a.colourCell(c, p, d, i, m) })
 					}
 				})
 			})
 		})
 
 		ui.Box(c).Height(1).Background(p.line)
-		ui.Row(c).Padding(15, 24, 15, 24).Gap(9).Center().Children(func() {
+		ui.Row(c).Padding(editorFootPad, 24, editorFootPad, 24).Gap(9).Center().Children(func() {
 			if msg := a.editorMessage(d); msg != "" {
 				ui.Text(c, msg).Grow(1).FontSize(11).LineHeight(1.4).TextColor(p.ink)
 			}
-			cancel := editorButton(c, p, "Cancel", false, 34, 13).Disabled(d.saving)
+			cancel := editorButton(c, p, "Cancel", false, editorPill, 13).Disabled(d.saving)
 			cancel.OnClick(func() { a.closeCharacterEditor() })
-			save := editorButton(c, p, "Save", true, 34, 13).MinWidth(72).Disabled(d.saving || a.charactersErr != nil)
+			save := editorButton(c, p, "Save", true, editorPill, 13).MinWidth(72).Disabled(d.saving || a.charactersErr != nil)
 			save.OnClick(func() { a.saveCharacterEditor() })
 		})
 		a.updateGaze(c, panel, d)
@@ -325,8 +375,8 @@ func (a *app) editorMessage(d *characterDraft) string {
 }
 
 // draftPreview draws the character as it is being chosen, its eyes following the pointer
-func (a *app) draftPreview(c *ui.Context, d *characterDraft) {
-	preview := ui.Box(c).Size(110, 110).Bind(&a.editorPreview).
+func (a *app) draftPreview(c *ui.Context, d *characterDraft, size float32) {
+	preview := ui.Box(c).Size(size, size).Bind(&a.editorPreview).
 		Label("Live preview: " + colours[d.choice.hue].name + " " + bodyNames[d.choice.shape])
 	// The pupils trail the pointer rather than snapping to it; with reduce motion they are
 	// where the pointer is or nowhere
@@ -373,11 +423,11 @@ func (a *app) updateGaze(c *ui.Context, panelElement ui.Element, d *characterDra
 
 // shapeCell is one of the eight shapes, drawn plain: the candidates have no face, so what they
 // show is the outline the character would wear
-func (a *app) shapeCell(c *ui.Context, p palette, d *characterDraft, shape int) {
+func (a *app) shapeCell(c *ui.Context, p palette, d *characterDraft, shape int, m editorMetrics) {
 	// One choice of a group: the checked state is for assistive technology, the outline that
 	// follows the shape is what shows the choice, and the focus brings a ground of its own so
 	// the two never read as one
-	cell := ui.Row(c.Key("shape:" + bodyID(shape))).Height(53).Center().Radius(12).Role(ui.RoleRadio).
+	cell := ui.Row(c.Key("shape:" + bodyID(shape))).Height(m.shapeH).Center().Radius(12).Role(ui.RoleRadio).
 		Focusable().Cursor(ui.CursorPointer).Label(bodyNames[shape]).Checked(d.choice.shape == shape).FocusRing(false)
 	if cell.Hovered() || cell.Focused() {
 		cell.Background(p.fill)
@@ -394,8 +444,8 @@ func (a *app) shapeCell(c *ui.Context, p palette, d *characterDraft, shape int) 
 
 // colourCell is one of the eleven colours: the dot keeps its size, and only the ring and the
 // tick say whether it is under the pointer or chosen
-func (a *app) colourCell(c *ui.Context, p palette, d *characterDraft, hue int) {
-	cell := ui.Box(c.Key("colour:" + colourID(hue))).ColumnSpan(2).Height(40).Center().Role(ui.RoleRadio).
+func (a *app) colourCell(c *ui.Context, p palette, d *characterDraft, hue int, m editorMetrics) {
+	cell := ui.Box(c.Key("colour:" + colourID(hue))).ColumnSpan(2).Height(m.colourH).Center().Role(ui.RoleRadio).
 		Focusable().Cursor(ui.CursorPointer).Label(colours[hue].name).Checked(d.choice.hue == hue).FocusRing(false)
 	if hue == 6 {
 		// The second row of five is centred under the six
