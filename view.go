@@ -26,11 +26,14 @@ var (
 	resizeGripSVG []byte
 	//go:embed icons/chevron-left.svg
 	chevronLeftSVG []byte
+	//go:embed icons/close.svg
+	closeSVG []byte
 
 	pinFilledIcon   = ui.MustParseSVG(pinFilledSVG)
 	pinOutlineIcon  = ui.MustParseSVG(pinOutlineSVG)
 	resizeGripIcon  = ui.MustParseSVG(resizeGripSVG)
 	chevronLeftIcon = ui.MustParseSVG(chevronLeftSVG)
+	closeIcon       = ui.MustParseSVG(closeSVG)
 )
 
 // palette is a monochrome interface where colour comes only from the characters; the
@@ -147,6 +150,20 @@ type app struct {
 	// cast is the character each project was given, handed out across all projects at once so
 	// that projects on screen clash as little as possible
 	cast map[string]character
+	// characters are the choices saved on disk, read once at startup and replaced as saves
+	// land; charactersErr says the file couldn't be read, so it must not be written over
+	characters    characterSettings
+	charactersErr error
+	charactersAt  string
+	// editor is the draft the character editor is showing, nil while it is closed. savedAt is
+	// when a character was last saved, which the confirmation goes by
+	editor  *characterDraft
+	savedAt time.Time
+	// characterEntry, editorPanel and editorPreview are the editor's own controls, kept by
+	// handle rather than by element: elements expire before the next build
+	characterEntry ui.Handle
+	editorPanel    ui.Handle
+	editorPreview  ui.Handle
 }
 
 func (a *app) view(c *ui.Context) {
@@ -157,7 +174,14 @@ func (a *app) view(c *ui.Context) {
 	}
 	w, _ := c.Size()
 	l := layoutFor(w)
-	a.cast = castCharacters(a.groups)
+	a.cast = castCharacters(a.groups, a.characters)
+	// The editor belongs to the project page it was opened from: if that project goes away
+	// there is nothing left for its draft to be about
+	if d := a.editor; d != nil {
+		if g, ok := a.openProject(); !ok || g.ProjectName != d.project {
+			a.closeCharacterEditor()
+		}
+	}
 
 	ui.Column(c).Fill().Radius(12).Border(1, p.edge).Background(p.bg).TextColor(p.ink).Clip().Children(func() {
 		a.titleBar(c, p, l)
@@ -168,6 +192,26 @@ func (a *app) view(c *ui.Context) {
 		}
 		ui.Box(c).Absolute().Bottom(3).Right(3).Size(14, 14).Center().Cursor(ui.CursorResizeNWSE).Children(func() {
 			ui.Icon(c, resizeGripIcon).Size(10, 10).TextColor(p.sec.Alpha(0.5))
+		})
+		a.savedToast(c, p)
+	})
+	a.characterEditor(c, p)
+}
+
+// savedToast confirms a save for a moment, then takes itself away with one more frame
+func (a *app) savedToast(c *ui.Context, p palette) {
+	if a.savedAt.IsZero() {
+		return
+	}
+	left := toastSpan - time.Since(a.savedAt)
+	if left <= 0 {
+		return
+	}
+	// One frame at the end takes the confirmation away
+	c.After(left)
+	ui.Row(c).Absolute().Left(0).Right(0).Bottom(22).Justify(ui.Center).PassThrough().Children(func() {
+		ui.Row(c).Height(36).Padding(0, 18).Radius(18).Center().Background(p.primary).Children(func() {
+			ui.Text(c, "Character saved").FontSize(12).FontWeight(510).TextColor(p.onPrimary)
 		})
 	})
 }
@@ -558,7 +602,8 @@ func (a *app) projectPage(c *ui.Context, p palette, g monitor.ProjectGroup) {
 			})
 
 			ui.Column(c).Background(p.tileHot).Radius(tileRadius).Padding(24, 16, 20, 16).Gap(14).AlignItems(ui.Center).Children(func() {
-				ui.Box(c).Padding(8, 0, 0, 0).Children(func() { a.avatar(c, g.ProjectName, m, dressed(pr, p, p.tileHot), 72) })
+				// The bottom padding is room for the hint the hover puts under the character
+				ui.Box(c).Padding(8, 0, 20, 0).Children(func() { a.characterButton(c, p, g, m, pr) })
 				ui.Column(c).Gap(4).AlignItems(ui.Center).MinWidth(0).FillWidth().Children(func() {
 					heading(c, p, g.ProjectName).SingleLine().TextAlign(ui.Center)
 					ui.Text(c, projectSummary(g)).FontSize(14).LineHeight(20.0 / 14).TextAlign(ui.Center).TextColor(p.sec)
@@ -873,7 +918,7 @@ func paintSpinner(pt *ui.Painter, r ui.Rect, p palette, turn float32) {
 var restingCast = []struct {
 	who  character
 	size float32
-}{{character{0, 0}, 38}, {character{1, 4}, 46}, {character{4, 3}, 42}, {character{2, 7}, 38}, {character{3, 6}, 36}}
+}{{character{1, 0}, 38}, {character{6, 4}, 46}, {character{0, 3}, 42}, {character{4, 7}, 38}, {character{2, 6}, 36}}
 
 const (
 	// restingOverlap is how far each character in the empty state is pulled over the one

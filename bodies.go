@@ -33,6 +33,30 @@ var bodies = [...]body{
 	{outline: heart()},
 }
 
+// bodyIDs name the shapes in the saved choices; they outlive their positions in bodies, so a
+// shape added in the middle doesn't move anyone's character. In bodies' order
+var bodyIDs = [...]string{"circle", "droplet", "square", "rice-ball", "cloud", "capsule", "star", "heart"}
+
+// bodyNames are the shapes as they are read out to assistive technology
+var bodyNames = [...]string{"Circle", "Droplet", "Square", "Rice ball", "Cloud", "Capsule", "Star", "Heart"}
+
+func bodyID(i int) string {
+	if i < 0 || i >= len(bodyIDs) {
+		return ""
+	}
+	return bodyIDs[i]
+}
+
+// bodyIndex is the shape a saved id names, or -1
+func bodyIndex(id string) int {
+	for i, s := range bodyIDs {
+		if s == id {
+			return i
+		}
+	}
+	return -1
+}
+
 // riceBall puffs a small triangle outward: the edges stay straight, the corners become arcs,
 // which comes out pointier than rounding the corners directly
 func riceBall() []point {
@@ -196,4 +220,159 @@ func fitted(pts []point, span float32) []point {
 		out[i] = point{(p.x - cx) * k, (p.y - cy) * k}
 	}
 	return out
+}
+
+// contourSamples is how many points a shape is sampled at. Two contours with the same count,
+// winding and start point can be blended point by point, which is how one body becomes another
+const contourSamples = 160
+
+// contours holds every body as a closed outline in the 64-unit frame: contourSamples points,
+// all running the same way round and all starting at the top, so index i of one is the same
+// part of the body as index i of another
+var contours = sampledContours()
+
+func sampledContours() [][]point {
+	out := make([][]point, len(bodies))
+	for i, b := range bodies {
+		out[i] = aligned(resampled(bodyOutline(b), contourSamples))
+	}
+	return out
+}
+
+// bodyOutline is b's edge as a polyline, its rotation included, without repeating the first
+// point at the end
+func bodyOutline(b body) []point {
+	if len(b.outline) > 0 {
+		return rotated(b.outline, b.rotate)
+	}
+	// A rounded rectangle walked clockwise from the top edge's right end. Each corner is a
+	// quarter of an ellipse; the straight edges between them come out of the resampling
+	const w, steps = float32(64), 16
+	l, t, r, bottom := -w/2, -b.height/2, w/2, b.height/2
+	el := func(c corner) (float32, float32) { return c.rx * w, c.ry * b.height }
+	tlw, tlh := el(b.radii[0])
+	trw, trh := el(b.radii[1])
+	brw, brh := el(b.radii[2])
+	blw, blh := el(b.radii[3])
+
+	var pts []point
+	arc := func(cx, cy, rx, ry float32, from, to float64) {
+		for k := 0; k <= steps; k++ {
+			a := from + (to-from)*float64(k)/steps
+			pts = append(pts, point{cx + rx*float32(math.Cos(a)), cy + ry*float32(math.Sin(a))})
+		}
+	}
+	arc(r-trw, t+trh, trw, trh, -math.Pi/2, 0)
+	arc(r-brw, bottom-brh, brw, brh, 0, math.Pi/2)
+	arc(l+blw, bottom-blh, blw, blh, math.Pi/2, math.Pi)
+	arc(l+tlw, t+tlh, tlw, tlh, math.Pi, 3*math.Pi/2)
+	return rotated(pts, b.rotate)
+}
+
+// rotated turns a polyline about the origin
+func rotated(pts []point, degrees float32) []point {
+	if degrees == 0 {
+		return pts
+	}
+	cos, sin := math.Cos(float64(degrees)*math.Pi/180), math.Sin(float64(degrees)*math.Pi/180)
+	out := make([]point, len(pts))
+	for i, p := range pts {
+		x, y := float64(p.x), float64(p.y)
+		out[i] = point{float32(x*cos - y*sin), float32(x*sin + y*cos)}
+	}
+	return out
+}
+
+// resampled walks a closed polyline and picks n points the same distance apart, so shapes of
+// different densities blend evenly
+func resampled(pts []point, n int) []point {
+	if len(pts) < 3 {
+		return nil
+	}
+	lengths := make([]float64, len(pts))
+	var total float64
+	for i := range pts {
+		a, b := pts[i], pts[(i+1)%len(pts)]
+		lengths[i] = math.Hypot(float64(b.x-a.x), float64(b.y-a.y))
+		total += lengths[i]
+	}
+	if total <= 0 {
+		return nil
+	}
+	step := total / float64(n)
+	out := make([]point, 0, n)
+	at, walked := 0, 0.0
+	for i := range n {
+		want := float64(i) * step
+		for at < len(pts)-1 && walked+lengths[at] < want {
+			walked += lengths[at]
+			at++
+		}
+		a, b := pts[at], pts[(at+1)%len(pts)]
+		t := 0.0
+		if lengths[at] > 0 {
+			t = (want - walked) / lengths[at]
+		}
+		out = append(out, point{
+			x: a.x + float32(t*float64(b.x-a.x)),
+			y: a.y + float32(t*float64(b.y-a.y)),
+		})
+	}
+	return out
+}
+
+// aligned turns a contour to run one way round and start it at the top, so every body's
+// points pair up with every other's instead of twisting
+func aligned(pts []point) []point {
+	if len(pts) < 3 {
+		return pts
+	}
+	// Signed area: negative and positive are the two directions, and only the sign matters
+	var area float64
+	for i := range pts {
+		a, b := pts[i], pts[(i+1)%len(pts)]
+		area += float64(a.x)*float64(b.y) - float64(b.x)*float64(a.y)
+	}
+	if area < 0 {
+		for i, j := 0, len(pts)-1; i < j; i, j = i+1, j-1 {
+			pts[i], pts[j] = pts[j], pts[i]
+		}
+	}
+	top := 0
+	for i, p := range pts {
+		if p.y < pts[top].y-0.01 || (abs32(p.y-pts[top].y) <= 0.01 && abs32(p.x) < abs32(pts[top].x)) {
+			top = i
+		}
+	}
+	out := make([]point, 0, len(pts))
+	out = append(out, pts[top:]...)
+	return append(out, pts[:top]...)
+}
+
+// morphed blends two contours; t of 0 is from, 1 is to
+func morphed(from, to []point, t float32) []point {
+	if len(from) != len(to) {
+		return to
+	}
+	if t <= 0 {
+		return from
+	}
+	if t >= 1 {
+		return to
+	}
+	out := make([]point, len(from))
+	for i := range from {
+		out[i] = point{
+			x: from[i].x + (to[i].x-from[i].x)*t,
+			y: from[i].y + (to[i].y-from[i].y)*t,
+		}
+	}
+	return out
+}
+
+func abs32(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

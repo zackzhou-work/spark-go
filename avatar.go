@@ -70,27 +70,75 @@ func waitGlyph(r monitor.WaitReason) string {
 	return "!"
 }
 
-// In order: yellow, blue, red, brown, grey
-var hues = [...]ui.Color{ui.Hex("#FFBF01"), ui.Hex("#419CFB"), ui.Hex("#F75655"), ui.Hex("#B2774B"), ui.Hex("#8C8C8C")}
+// colour is one of the colours a character can wear: the id the saved choices store, the
+// name read out to assistive technology, and the body colour
+type colour struct {
+	id   string
+	name string
+	hex  string
+	body ui.Color
+}
 
-// character is one character: the hue-th colour from hues paired with the shape-th shape from
-// bodies
+// In choice order: black, brown, red, orange, yellow, green, teal, blue, purple, pink, grey
+var colours = [...]colour{
+	{id: "black", name: "Black", hex: "#000000", body: ui.Hex("#000000")},
+	{id: "brown", name: "Brown", hex: "#A16C39", body: ui.Hex("#A16C39")},
+	{id: "red", name: "Red", hex: "#FB2C3F", body: ui.Hex("#FB2C3F")},
+	{id: "orange", name: "Orange", hex: "#FE6A10", body: ui.Hex("#FE6A10")},
+	{id: "yellow", name: "Yellow", hex: "#FFBF01", body: ui.Hex("#FFBF01")},
+	{id: "green", name: "Green", hex: "#13C16F", body: ui.Hex("#13C16F")},
+	{id: "teal", name: "Teal", hex: "#15B8A3", body: ui.Hex("#15B8A3")},
+	{id: "blue", name: "Blue", hex: "#429CFB", body: ui.Hex("#429CFB")},
+	{id: "purple", name: "Purple", hex: "#905AFA", body: ui.Hex("#905AFA")},
+	{id: "pink", name: "Pink", hex: "#F93498", body: ui.Hex("#F93498")},
+	{id: "gray", name: "Gray", hex: "#959595", body: ui.Hex("#959595")},
+}
+
+// tick is the check drawn on the chosen dot. White reads on every colour but the light
+// yellow, where the dark ink shows
+func (c colour) tick() ui.Color {
+	if c.id == "yellow" {
+		return eyeInk
+	}
+	return eyeWhite
+}
+
+func colourID(i int) string {
+	if i < 0 || i >= len(colours) {
+		return ""
+	}
+	return colours[i].id
+}
+
+// colourIndex is the colour a saved id names, or -1
+func colourIndex(id string) int {
+	for i, c := range colours {
+		if c.id == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// character is one character: the hue-th colour from colours paired with the shape-th shape
+// from bodies
 type character struct{ hue, shape int }
 
-func (ch character) color() ui.Color { return hues[ch.hue] }
+func (ch character) color() ui.Color { return colours[ch.hue].body }
 func (ch character) body() body      { return bodies[ch.shape] }
 
 // characterOf takes colour and shape from different digits of the seed so the two stay
 // independent
 func characterOf(seed uint32) character {
-	return character{hue: int(seed % uint32(len(hues))), shape: int(seed / uint32(len(hues)) % uint32(len(bodies)))}
+	return character{hue: int(seed % uint32(len(colours))), shape: int(seed / uint32(len(colours)) % uint32(len(bodies)))}
 }
 
-// castCharacters hands out characters to a set of projects. It walks them in name order,
-// starting from the one each name hashes to; a project whose character is already taken keeps
-// its shape and changes colour, preferring a colour nobody has yet, and only then takes any
-// free pairing. Once every pairing is used up nothing is staggered and projects share
-func castCharacters(groups []monitor.ProjectGroup) map[string]character {
+// castCharacters hands out characters to a set of projects. A project with a saved character
+// keeps it, and two of them may share one; the rest walk in name order from the character each
+// name hashes to, avoiding what the saved ones took. A project whose character is already
+// taken keeps its shape and changes colour, preferring a colour nobody has yet, and only then
+// takes any free pairing. Once every pairing is used up nothing is staggered and projects share
+func castCharacters(groups []monitor.ProjectGroup, saved characterSettings) map[string]character {
 	names := make([]string, len(groups))
 	for i, g := range groups {
 		names[i] = g.ProjectName
@@ -98,8 +146,19 @@ func castCharacters(groups []monitor.ProjectGroup) map[string]character {
 	slices.Sort(names)
 	cast := make(map[string]character, len(names))
 	taken := map[character]bool{}
-	var hueUsed [len(hues)]bool
+	var hueUsed [len(colours)]bool
 	for _, name := range names {
+		ch, ok := saved.character(name)
+		if !ok {
+			continue
+		}
+		cast[name] = ch
+		taken[ch], hueUsed[ch.hue] = true, true
+	}
+	for _, name := range names {
+		if _, ok := cast[name]; ok {
+			continue
+		}
 		ch := characterOf(projectSeed(name))
 		if taken[ch] {
 			ch = freeCharacter(ch, taken, hueUsed)
@@ -112,22 +171,22 @@ func castCharacters(groups []monitor.ProjectGroup) map[string]character {
 
 // freeCharacter moves a wanted character off a clash: first to an unused colour with the same
 // shape, then to any free colour with that shape, then to any free pairing at all
-func freeCharacter(want character, taken map[character]bool, hueUsed [len(hues)]bool) character {
+func freeCharacter(want character, taken map[character]bool, hueUsed [len(colours)]bool) character {
 	free := func(hue, shape int) bool { return !taken[character{hue, shape}] }
-	nextHue := func(i int) int { return (want.hue + i) % len(hues) }
-	for i := 1; i < len(hues); i++ {
+	nextHue := func(i int) int { return (want.hue + i) % len(colours) }
+	for i := 1; i < len(colours); i++ {
 		if h := nextHue(i); !hueUsed[h] && free(h, want.shape) {
 			return character{h, want.shape}
 		}
 	}
-	for i := 1; i < len(hues); i++ {
+	for i := 1; i < len(colours); i++ {
 		if h := nextHue(i); free(h, want.shape) {
 			return character{h, want.shape}
 		}
 	}
 	for j := 1; j < len(bodies); j++ {
 		shape := (want.shape + j) % len(bodies)
-		for i := range len(hues) {
+		for i := range len(colours) {
 			if h := nextHue(i); free(h, shape) {
 				return character{h, shape}
 			}
@@ -141,6 +200,32 @@ var (
 	eyeInk    = ui.Hex("#0D0D0D")
 	badgeFill = ui.Hex("#1A1A19")
 )
+
+// faceInk is how much white the lines drawn on a body need: 1 on a body so dark that ink
+// would be lost in it, 0 on one where ink shows. The body's relative luminance decides, by
+// the contrast it gives each of black and white
+func faceInk(body ui.Color) float32 {
+	lum := 0.2126*linear(body.R) + 0.7152*linear(body.G) + 0.0722*linear(body.B)
+	if (lum+0.05)/0.05 >= 1.05/(lum+0.05) {
+		return 0
+	}
+	return 1
+}
+
+// faceLine mixes the body-drawn ink with white, so a colour change carries the lines with it
+func faceLine(white float32) ui.Color {
+	mix := func(a, b uint8) uint8 { return uint8(float32(a) + (float32(b)-float32(a))*white) }
+	return ui.RGB(mix(eyeInk.R, eyeWhite.R), mix(eyeInk.G, eyeWhite.G), mix(eyeInk.B, eyeWhite.B))
+}
+
+// linear converts one sRGB channel to light, as the standard says
+func linear(c uint8) float64 {
+	v := float64(c) / 255
+	if v <= 0.04045 {
+		return v / 12.92
+	}
+	return math.Pow((v+0.055)/1.055, 2.4)
+}
 
 func projectSeed(name string) uint32 {
 	h := fnv.New32a()
@@ -160,12 +245,7 @@ const (
 // spill a little past the box, so leave room around it. The cast decides which character a
 // project gets; a project missing from it falls back to its own name
 func (a *app) avatar(c *ui.Context, project string, m mood, p prop, size float32) ui.Element {
-	seed := projectSeed(project)
-	ch, ok := a.cast[project]
-	if !ok {
-		ch = characterOf(seed)
-	}
-	return avatarOf(c, ch, seed, m, p, size).Label(project)
+	return avatarOf(c, a.character(project), projectSeed(project), m, p, size).Label(project)
 }
 
 // avatarOf draws one given character; the seed only staggers when each character blinks
@@ -387,7 +467,7 @@ func paintAvatar(pt *ui.Painter, r ui.Rect, ch character, p pose, pr prop) {
 	}
 	pt.FillPath(&body.path, ch.color())
 
-	paintFace(pt, newShape(cx, cy+b.faceY*u, u, b.rotate), p)
+	paintFace(pt, newShape(cx, cy+b.faceY*u, u, b.rotate), p, faceLine(faceInk(ch.color())))
 
 	if p.bubble > 0.01 && pr.glyph != "" {
 		paintBubble(pt, r, u, pr.glyph, p.bubble, p.nudge)
@@ -398,8 +478,9 @@ func paintAvatar(pt *ui.Painter, r ui.Rect, ch character, p pose, pr prop) {
 }
 
 // paintFace draws the four expressions from the design; coordinates are offsets from the
-// centre (32, 32) of the 64px frame
-func paintFace(pt *ui.Painter, base *shape, p pose) {
+// centre (32, 32) of the 64px frame. line is what is drawn straight onto the body, which a
+// dark body would swallow; eye whites and the pupils inside them keep their own colours
+func paintFace(pt *ui.Painter, base *shape, p pose, line ui.Color) {
 	layer := func(blink bool) *shape {
 		s := *base
 		s.pivot, s.sy = -2, p.squash
@@ -417,7 +498,7 @@ func paintFace(pt *ui.Painter, base *shape, p pose) {
 		brows := layer(false)
 		brows.pill(-11.5, -17.5, 13, 3, -16)
 		brows.pill(10.5, -17.5, 13, 3, 16)
-		pt.FillPath(&brows.path, eyeInk)
+		pt.FillPath(&brows.path, line)
 		paintEyes(pt, layer(true), 11, 8, 10, 0, -3, 4, 5)
 	case moodWorking:
 		paintEyes(pt, layer(true), 10.5, 7.5, 9, 3.5+p.glance, 1.5, 4, 4.5)
@@ -425,15 +506,15 @@ func paintFace(pt *ui.Painter, base *shape, p pose) {
 		eyes := layer(false)
 		eyes.arc(-11.5, 0, 4.75, -6.25)
 		eyes.arc(11.5, 0, 4.75, -6.25)
-		pt.StrokePath(&eyes.path, 3.5*base.u, eyeInk)
+		pt.StrokePath(&eyes.path, 3.5*base.u, line)
 		mouth := layer(false)
 		mouth.arc(0, 5, 4.5, 4.5)
-		pt.StrokePath(&mouth.path, 3*base.u, eyeInk)
+		pt.StrokePath(&mouth.path, 3*base.u, line)
 	default:
 		lids := layer(false)
 		lids.pill(-11.5, -0.5, 13, 3, 0)
 		lids.pill(11.5, -0.5, 13, 3, 0)
-		pt.FillPath(&lids.path, eyeInk)
+		pt.FillPath(&lids.path, line)
 	}
 }
 

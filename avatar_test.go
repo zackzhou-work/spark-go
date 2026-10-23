@@ -49,8 +49,8 @@ func TestColorAndShapeArePickedApart(t *testing.T) {
 	for i := range 4000 {
 		seen[characterOf(projectSeed(fmt.Sprintf("project-%d", i)))] = true
 	}
-	if len(seen) != len(hues)*len(bodies) {
-		t.Fatalf("project names should reach all %d pairings, reached %d", len(hues)*len(bodies), len(seen))
+	if len(seen) != len(colours)*len(bodies) {
+		t.Fatalf("project names should reach all %d pairings, reached %d", len(colours)*len(bodies), len(seen))
 	}
 }
 
@@ -77,7 +77,7 @@ func clashing(n int) []string {
 
 func TestCastKeepsUnclashedCharacters(t *testing.T) {
 	names := []string{"spark-go", "joyspace-ai", "OpenPaper"}
-	cast := castCharacters(groupsNamed(names...))
+	cast := castCharacters(groupsNamed(names...), characterSettings{})
 	for _, n := range names {
 		if want := characterOf(projectSeed(n)); cast[n] != want {
 			t.Errorf("%s should keep its own character %v, got %v", n, want, cast[n])
@@ -87,30 +87,30 @@ func TestCastKeepsUnclashedCharacters(t *testing.T) {
 
 func TestCastMovesClashesToUnusedHues(t *testing.T) {
 	names := clashing(3)
-	cast := castCharacters(groupsNamed(names...))
+	cast := castCharacters(groupsNamed(names...), characterSettings{})
 	first := characterOf(projectSeed(names[0]))
 	if cast[names[0]] != first {
 		t.Errorf("the first name in order should keep its character")
 	}
-	hues := map[int]bool{}
+	used := map[int]bool{}
 	for _, n := range names {
 		if cast[n].shape != first.shape {
 			t.Errorf("%s should keep its shape when moved, got %v", n, cast[n])
 		}
-		hues[cast[n].hue] = true
+		used[cast[n].hue] = true
 	}
-	if len(hues) != len(names) {
-		t.Errorf("clashing projects should spread over different hues, got %v", cast)
+	if len(used) != len(names) {
+		t.Errorf("clashing projects should spread over different colours, got %v", cast)
 	}
 }
 
 func TestCastNeverRepeatsUntilFull(t *testing.T) {
-	total := len(hues) * len(bodies)
+	total := len(colours) * len(bodies)
 	var names []string
 	for i := range total {
 		names = append(names, fmt.Sprintf("p%d", i))
 	}
-	cast := castCharacters(groupsNamed(names...))
+	cast := castCharacters(groupsNamed(names...), characterSettings{})
 	seen := map[character]bool{}
 	for _, ch := range cast {
 		seen[ch] = true
@@ -124,7 +124,7 @@ func TestCastIgnoresGroupOrder(t *testing.T) {
 	names := append(clashing(4), "spark-go", "infra")
 	reversed := slices.Clone(names)
 	slices.Reverse(reversed)
-	a, b := castCharacters(groupsNamed(names...)), castCharacters(groupsNamed(reversed...))
+	a, b := castCharacters(groupsNamed(names...), characterSettings{}), castCharacters(groupsNamed(reversed...), characterSettings{})
 	for _, n := range names {
 		if a[n] != b[n] {
 			t.Errorf("%s got %v and %v depending on group order", n, a[n], b[n])
@@ -159,7 +159,7 @@ func TestGlanceStaysInsideTheEye(t *testing.T) {
 // without opening a window
 func TestAvatarGallery(t *testing.T) {
 	g := &avatarGallery{}
-	tt := ui.NewTester(g.view, 840, 960)
+	tt := ui.NewTester(g.view, 840, 760)
 	tt.SetScale(2)
 	// Idle motions off, so each expression is captured at rest
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})

@@ -47,7 +47,20 @@ func main() {
 
 	scanner := monitor.NewScanner()
 	home, _ := os.UserHomeDir()
-	a := &app{pinned: true, groups: scanner.ScanAll()}
+	// The saved characters are read once here, not in the view: a build must not touch the
+	// disk, and a file that can't be read has to stay unread rather than be written over
+	charactersAt := charactersPath(home)
+	characters, charactersErr := readCharacterSettings(charactersAt)
+	if charactersErr != nil {
+		log.Printf("[Characters] reading %s failed, saving stays off: %v", charactersAt, charactersErr)
+	}
+	a := &app{
+		pinned:        true,
+		groups:        scanner.ScanAll(),
+		characters:    characters,
+		charactersErr: charactersErr,
+		charactersAt:  charactersAt,
+	}
 	// The state the window starts with is also the watcher's baseline, so the two cannot
 	// disagree about what has already been published
 	side := readSideState(home)

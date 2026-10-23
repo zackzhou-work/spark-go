@@ -18,7 +18,7 @@ type avatarGallery struct {
 
 func (g *avatarGallery) view(c *ui.Context) {
 	ink, sec := ui.Hex("#34322D"), ui.Hex("#858481")
-	ui.Column(c).Fill().Background(ui.Hex("#FFFFFF")).TextColor(ink).Padding(48, 32, 32, 32).Gap(28).Children(func() {
+	ui.Column(c).Fill().Background(ui.Hex("#FFFFFF")).TextColor(ink).Padding(36, 28, 28, 28).Gap(22).Children(func() {
 		ui.Row(c).Gap(6).Children(func() {
 			for i, name := range moodNames {
 				btn := ui.Row(c.Key(i)).Height(32).Padding(0, 14).Radius(16).Cursor(ui.CursorPointer).Label(name)
@@ -35,34 +35,49 @@ func (g *avatarGallery) view(c *ui.Context) {
 			}
 		})
 
-		ui.Row(c).Gap(32).Padding(16, 0, 8, 0).Children(func() {
+		ui.Row(c).Gap(32).Padding(8, 0, 4, 0).Children(func() {
 			for i := range bodies {
 				avatarOf(c.Key(fmt.Sprint("big", i)), demoCharacter(i), uint32(i), g.mood, demoProp(i), 64)
 			}
 		})
 
-		ui.Column(c).Gap(24).Children(func() {
+		// Every colour with every expression, and every shape with every expression: a body
+		// dark enough to swallow a mouth and a shape that leaves the eyes no room show here
+		// whichever expression is up
+		ui.Row(c).Gap(28).AlignItems(ui.Start).Children(func() {
+			g.wall(c, sec, "Colours", len(colours),
+				func(i int) string { return colours[i].name },
+				func(i int) character { return character{hue: i, shape: bodyIndex("cloud")} })
+			g.wall(c, sec, "Shapes", len(bodies),
+				func(i int) string { return bodyNames[i] },
+				func(i int) character { return character{hue: 0, shape: i} })
+		})
+	})
+}
+
+// wall lists characters down the page, the four expressions across
+func (g *avatarGallery) wall(c *ui.Context, sec ui.Color, title string, n int, name func(int) string, who func(int) character) {
+	const cell, size = float32(64), float32(34)
+	ui.Column(c).Children(func() {
+		ui.Row(c).Height(18).Gap(8).Children(func() {
+			ui.Text(c, title).Width(cell).FontSize(11).TextColor(sec)
+		})
+		for i := range n {
 			ui.Row(c).Gap(8).Children(func() {
-				for _, name := range moodNames {
-					ui.Text(c, name).Width(88).FontSize(11).TextColor(sec).TextAlign(ui.Center)
+				ui.Text(c, name(i)).Width(cell).FontSize(11).TextColor(sec)
+				for m := range moodCount {
+					ui.Row(c).Width(cell).Height(size + 6).Center().Children(func() {
+						avatarOf(c.Key(fmt.Sprint(i, "-", m)), who(i), uint32(i), mood(m), demoProp(i), size)
+					})
 				}
 			})
-			for i := range bodies {
-				ui.Row(c).Gap(8).Children(func() {
-					for m := range moodNames {
-						ui.Row(c).Width(88).Center().Children(func() {
-							avatarOf(c.Key(fmt.Sprint(i, "-", m)), demoCharacter(i), uint32(i), mood(m), demoProp(i), 48)
-						})
-					}
-				})
-			}
-		})
+		}
 	})
 }
 
 // demoCharacter gives every body shape a turn, cycling through the colours
 func demoCharacter(i int) character {
-	return character{hue: i % len(hues), shape: i}
+	return character{hue: i % len(colours), shape: i}
 }
 
 // demoProp makes the preview show both ! and ? bubbles along with single- and multi-digit
@@ -72,7 +87,8 @@ func demoProp(i int) prop {
 	if i%2 == 1 {
 		glyph = "?"
 	}
-	return prop{glyph: glyph, count: []int{1, 2, 3, 1, 12}[i%len(hues)]}
+	counts := []int{1, 2, 3, 1, 12}
+	return prop{glyph: glyph, count: counts[i%len(counts)]}
 }
 
 func runAvatarGallery() {
@@ -81,7 +97,7 @@ func runAvatarGallery() {
 		mygo.NewWindow(mygo.WindowOptions{
 			Title:   "Spark characters",
 			Width:   840,
-			Height:  960,
+			Height:  760,
 			Content: ui.View(g.view),
 		})
 	})
