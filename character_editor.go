@@ -267,7 +267,9 @@ func (a *app) characterButton(c *ui.Context, p palette, g monitor.ProjectGroup, 
 	const size, avatarSize = float32(96), float32(72)
 	btn := ui.ButtonBase(c).Size(size, size).Radius(22).Cursor(ui.CursorPointer).
 		Label("Edit project character").Description("Edit character").Bind(&a.characterEntry)
-	hint := btn.Animate("hint", lit(btn.Hovered() || btn.Focused()), rowHoverFade)
+	// Focus comes back to the avatar as the dialog closes, so the hint follows the keyboard
+	// focus rather than any focus: a pointer that just pressed Save or Cancel left none to show
+	hint := btn.Animate("hint", lit(btn.Hovered() || btn.FocusVisible()), rowHoverFade)
 	if hint > 0 {
 		btn.Background(p.fill.Alpha(hint))
 	}
