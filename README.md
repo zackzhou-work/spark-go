@@ -35,11 +35,11 @@ spark watches four agents: Claude Desktop's Code tab, Codex, pi, and Cursor's de
 
 ### pi
 
-- **Sessions**: pi writes `~/.pi/agent/sessions/--<cwd>--/<time>_<sessionId>.jsonl`. The header carries the working directory, which names the project; the title is the name from `/name` if there is one, and otherwise the first user message. Sub-agent sessions live in a directory under their parent's file and are left out. A session gets a row only while something is behind it — a Herdr pane, or a live pi process the extension reports — because a session whose pi has gone can be neither opened nor asked anything.
-- **Herdr**: when pi runs in [Herdr](https://herdr.dev), spark reads Herdr's own agent list: `agent.list` over its socket at `~/.config/herdr/herdr.sock`, no CLI and no `PATH` lookup. Herdr knows the session file behind every pane, so `working`, `blocked` and `idle` come from there. Clicking a pi row focuses that pane, which is also how Herdr marks it seen.
-- **Extension (optional)**: **Install for pi** in the banner writes `~/.pi/agent/extensions/spark-pi.ts`, and pi's own events then report the state from the process itself, including what a blocking dialog is asking for. That is what covers a pi session running in an IDE or a plain terminal. Without it, a pi session outside Herdr has nothing reporting on it, so spark leaves it out rather than guess at a state it can't see.
+- **Sessions**: pi writes `~/.pi/agent/sessions/--<cwd>--/<time>_<sessionId>.jsonl`. The header carries the working directory, which names the project; the title is the name from `/name` if there is one, and otherwise the first user message. Sub-agent sessions live in a directory under their parent's file and are left out. A session gets a row only while something is behind it — a live pi process the extension reports — because a session whose pi has gone can be neither opened nor asked anything.
+- **[Herdr](https://herdr.dev)**: two sockets, no CLI and no `PATH` lookup. `terminal.list` (JSON-RPC) on the core that runs the terminals, at `$HC_TERMINAL_SOCKET` or `~/.local/state/herdr-core/default/default.sock`, says which terminals run a pi agent and what each is doing, so `working`, `blocked`, `done` and `idle` come from there. Clicking a row sends `{"do":"agent.focus"}` to the window's socket at `~/.config/herdr-app/herdr-app.sock`, which is the only thing that can put a terminal in front of you; spark raises Herdr itself afterwards. Neither socket can say which session file a terminal runs, so a terminal is matched to a session by pid: herdr-core's `foreground.pid` is the pi process, and the extension's receipt carries the same pid. Terminals on another machine (`vps/t7`) are left out, since their pids say nothing about a process here.
+- **Extension**: **Install for pi** in the banner writes `~/.pi/agent/extensions/spark-pi.ts`, and pi's own events then report the state from the process itself, including what a blocking dialog is asking for. It is what covers a pi session running in an IDE or a plain terminal, and it is also the only thing that says which pid a session is, so without it a pi session has no row at all: nothing could report on it or take you to it.
 - **Read state**: pi has no desktop app to mark a session read. In Herdr, `idle` and `done` already tell that apart — Herdr marks a tab seen as soon as it is focused, so its `idle` is a session you have looked at and its `done` is work that finished while you weren't — which is what spark shows as Unread. A session only the extension reports has nothing to go on but submitted prompts, and those come before the turn ran, so its New badge fades after 30 minutes rather than hanging on a session you walked away from.
-- **Boundaries**: only the local Herdr session is read, so sessions on a `herdr --machine` remote don't appear. Runs started with `--no-session` leave no file to scan, and a `--session-dir` or `PI_CODING_AGENT_SESSION_DIR` override is not followed. pi changes are noticed by the rescan that runs every few seconds rather than by file watching: pi keeps hundreds of session files, and watching a directory on macOS means watching every file in it.
+- **Boundaries**: only this machine's terminals are read, so a pi running on a `herdr --machine` remote has nothing to match. Runs started with `--no-session` leave no file to scan, and a `--session-dir` or `PI_CODING_AGENT_SESSION_DIR` override is not followed. pi changes are noticed by the rescan that runs every few seconds rather than by file watching: pi keeps hundreds of session files, and watching a directory on macOS means watching every file in it.
 
 ### Cursor
 
@@ -102,7 +102,7 @@ cursor://anysphere.cursor-deeplink/agent?id=<composerId>
 - **A build is verified or it isn't.** A URL that raises the window and selects nothing looks exactly like success from here, and the system opener's exit code means only "dispatched". The table in `internal/monitor/cursorcompat.go` names the builds that were clicked through by hand — currently 3.24.12 with commit `37b865941ccb31e2fc90c685157534efca87f960`, see [the validation record](docs/research/cursor-integration-validation.md). Any other build lists its sessions read-only, keeps the rows static and offers no link. `SPARK_CURSOR_JUMP=1` overrides that for one run, which is how another build gets checked; it is not a supported configuration.
 - **There is no receipt.** Cursor doesn't record which conversation its Agents window selected, so a click sends one URL and nothing else: it doesn't mark the session read, doesn't write to Cursor's database, and doesn't fall back to opening the project, a new chat or a CLI resume when the link can't do its job.
 
-**pi** has no deep link, so spark asks Herdr to focus the pane its session runs in (`agent.focus` on the same socket) and then raises Herdr itself. A pi session running anywhere else — an IDE, a plain terminal, `tmux` — has nothing to focus: the row keeps its time on hover instead of showing the arrow, and a waiting session gets a card with only **Later**.
+**pi** has no deep link, so spark asks the Herdr window to show the terminal its session runs in (`{"do":"agent.focus"}` on `~/.config/herdr-app/herdr-app.sock`) and then raises Herdr itself. A pi session running anywhere else — an IDE, a plain terminal, `tmux` — has nothing to show: the row keeps its time on hover instead of showing the arrow and explains itself in a tooltip, and a waiting session gets a card with only **Later**.
 
 ### Caveats
 
@@ -114,7 +114,7 @@ cursor://anysphere.cursor-deeplink/agent?id=<composerId>
 
 **Multiple accounts aren't handled**: spark scans the sessions of every `<account>/<org>`, but the deep link only reaches those of the account signed in now.
 
-**Herdr's socket is not a public contract either.** `agent.list` and `agent.focus` are read straight off the socket API of Herdr 20261013.1, pinned by `internal/monitor/herdr_test.go` against a fake server rather than against a published schema. If Herdr changes a field, the scan finds no pi agents and only the extension's reports are left: nothing else in spark depends on it.
+**Herdr's sockets are not a public contract either.** `terminal.list` on herdr-core (0.1.14) and `agent.focus` on the app are read straight off their sockets, pinned by `internal/monitor/herdr_test.go` against a fake server rather than against a published schema. If a field changes, the scan finds no pi terminals and every pi row loses its terminal: the rows stay, since the extension still reports on them, but they stop being targets. Nothing else in spark depends on Herdr.
 
 ## Installing the hook
 
@@ -232,7 +232,7 @@ go run . -avatars
 mkdir -p /tmp/spark-screens && SPARK_SCREENS=/tmp/spark-screens go test -run TestScreens .
 ```
 
-The screens include the pi waiting cards: `project-pi` is a session Herdr can focus, `project-pi-nowhere` one spark can't open.
+The screens include the pi waiting cards: `project-pi` is a session Herdr can show, `project-pi-nowhere` one spark can't open.
 
 The banner at the top of this README is rendered from the app's own view with made-up sessions, then laid out by `docs/banner/index.html` in headless Google Chrome:
 
