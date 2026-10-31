@@ -244,7 +244,7 @@ const (
 	faceShift  = 240 * time.Millisecond
 	idleFrame  = 16 * time.Millisecond
 	blinkSpan  = 180 * time.Millisecond
-	glanceSpan = 260 * time.Millisecond
+	driftFrame = 33 * time.Millisecond
 	nudgeEvery = 1400 * time.Millisecond
 )
 
@@ -274,7 +274,20 @@ func avatarOf(c *ui.Context, ch character, seed uint32, m mood, p prop, size flo
 	return box.Draw(func(pt *ui.Painter, r ui.Rect) {
 		pose := settle(shown)
 		if !still {
-			pt.After(idle(&pose, seed, pt.Now()))
+			idle(&pose, seed, pt.Now())
+			// a pointer passing close turns the face toward it, easing out of the drift
+			x, y, _ := box.PointerPosition()
+			var share float32
+			pose.gaze, share = pose.gaze.toward(x-r.W/2, y-r.H/2, size)
+			if share > 0 {
+				// answering a pointer is fast motion, and a timer lands between refreshes and
+				// waits for the next one: only the display's own frames are even enough
+				pt.AnimationFrame()
+			} else {
+				// the drift is slow enough that a timer's uneven landing can't be seen, and it
+				// leaves the window most of the time it would otherwise spend repainting
+				pt.After(frameFor(pose.mood))
+			}
 		}
 		paintAvatar(pt, r, ch, pose, p)
 	})
@@ -285,11 +298,172 @@ type pose struct {
 	mood   mood
 	squash float32 // vertical scale of the features, passing through 0 on an expression change
 	blink  float32 // applies to the eyes only
-	glance float32 // left/right pupil offset while working
+	gaze   gaze    // where the face is turned, and so where its eyes land
+	breath float32 // how far the body has breathed out, as a share of its size
+	lift   float32 // how far the body has risen, in design units
 	nudge  float32 // the bubble bobbing up and down
 	bubble float32 // bubble entry progress
 	badge  float32 // badge entry progress
 }
+
+// gaze is how a character's face is turned, in degrees: yaw looks right, pitch looks down,
+// roll leans it counter-clockwise on screen
+type gaze struct{ yaw, pitch, roll float32 }
+
+// faceRadius is the sphere the 64px design's eyes sit on. Projecting them onto it is what
+// makes a small turn read as a turn: the eyes travel along the surface, and the one nearer
+// the edge narrows
+const (
+	faceRadius = 32
+	eyeDrop    = -2 // eyes sit a little above the midline
+)
+
+// eyeOnFace is one eye as it lands on the 64px design plane, in design units and degrees
+type eyeOnFace struct {
+	x, y float32
+	rx   float32
+	ry   float32
+	tilt float32
+}
+
+type vec3 struct{ x, y, z float32 }
+
+// spin3 rotates v by degrees about axis
+func spin3(v, axis vec3, degrees float32) vec3 {
+	rad := float64(degrees) * math.Pi / 180
+	c, s := float32(math.Cos(rad)), float32(math.Sin(rad))
+	dot := v.x*axis.x + v.y*axis.y + v.z*axis.z
+	cross := vec3{
+		axis.y*v.z - axis.z*v.y,
+		axis.z*v.x - axis.x*v.z,
+		axis.x*v.y - axis.y*v.x,
+	}
+	return vec3{
+		v.x*c + cross.x*s + axis.x*dot*(1-c),
+		v.y*c + cross.y*s + axis.y*dot*(1-c),
+		v.z*c + cross.z*s + axis.z*dot*(1-c),
+	}
+}
+
+// eyes places a pair of eyes on the face: dx is their resting distance from the midline, rx
+// and ry their resting half sizes. The turn moves them along the sphere and narrows the one
+// that has gone round the side
+func (g gaze) eyes(dx, rx, ry float32) [2]eyeOnFace {
+	forward, right, up := vec3{0, 0, 1}, vec3{1, 0, 0}, vec3{0, 1, 0}
+	forward, right = spin3(forward, up, g.yaw), spin3(right, up, g.yaw)
+	up, forward = spin3(up, right, g.pitch), spin3(forward, right, g.pitch)
+
+	// the body bends as it turns, so the eyes ride the same bend: without it a turned body
+	// pulls in from under the eye that is going round with it
+	_, turn := g.bodyTurn()
+	split := float32(math.Asin(float64(dx/faceRadius))) * 180 / math.Pi
+	// an eye is drawn at the size it is given when the face looks straight ahead, so the
+	// rest face is the design's and only a turn narrows it
+	rest := float32(math.Cos(float64(split)*math.Pi/180)) * (0.85 + 0.15*float32(math.Cos(float64(split)*math.Pi/180)))
+	var out [2]eyeOnFace
+	for i, side := range [2]float32{-1, 1} {
+		on := spin3(forward, up, side*split)
+		across := spin3(right, up, side*split)
+		narrow := float32(math.Hypot(float64(across.x), float64(across.y)))
+		flat := float32(math.Hypot(float64(up.x), float64(up.y)))
+		deep := 0.85 + 0.15*max(0, on.z)
+		width, height := rx*narrow*deep/rest, ry*flat*deep/rest
+		// the eye is drawn flat on the surface, so near the rim it would poke past the
+		// outline: hold it inside the bent body, which is invisible and keeps it on it
+		x, y := on.x*faceRadius, -on.y*faceRadius+eyeDrop
+		x -= turn * x * x / faceRadius
+		right := faceRadius * (1 - turn)
+		left := -faceRadius * (1 + turn)
+		x = min(max(x, left+width), right-width)
+		y = clampTo(y, faceRadius-height)
+		out[i] = eyeOnFace{
+			x:    x,
+			y:    y,
+			rx:   width,
+			ry:   height,
+			tilt: float32(math.Atan2(float64(-across.y), float64(across.x))) * 180 / math.Pi,
+		}
+	}
+	return out
+}
+
+// toward turns the gaze onto a pointer (dx, dy) from the character's centre, taking the drift
+// over entirely by the time the pointer is close: a character that notices you. It returns how
+// much of the drift the pointer took over, 0 when it is out of reach
+func (g gaze) toward(dx, dy, size float32) (gaze, float32) {
+	const reach = 3 // how many body widths away the pointer starts to matter
+	far := size * reach
+	dist := float32(math.Hypot(float64(dx), float64(dy)))
+	share := 1 - dist/far
+	if share <= 0 {
+		return g, 0
+	}
+	share = share * share * (3 - 2*share) // smoothstep, so it doesn't snap
+	// a dead zone right around the character: a pointer that close means "look at me", and it
+	// keeps a hand resting on the character from flicking its eyes back and forth
+	dx, dy = soft(dx, size*0.4), soft(dy, size*0.4)
+	aim := gaze{
+		yaw:   clampTo(float32(math.Atan2(float64(dx), float64(size*0.9)))*180/math.Pi, 30),
+		pitch: clampTo(float32(math.Atan2(float64(dy), float64(size*0.9)))*180/math.Pi, 22),
+	}
+	return gaze{
+		yaw:   g.yaw + (aim.yaw-g.yaw)*share,
+		pitch: g.pitch + (aim.pitch-g.pitch)*share,
+		roll:  g.roll,
+	}, share
+}
+
+// faceOffset is how far a feature on the face has moved from where it rests, in design units:
+// what the brows, the mouth and the closed lids follow
+func faceOffset(g gaze) (dx, dy float32) {
+	eyes := g.eyes(11.5, 0, 0)
+	return (eyes[0].x + eyes[1].x) / 2, (eyes[0].y+eyes[1].y)/2 - eyeDrop
+}
+
+// pupilLook is how far the pupils lean toward where the face is looking, as a share of the
+// eye. The eyes travel with the head; the pupils lead it, which is what reads as aiming
+func (g gaze) pupilLook() (x, y float32) {
+	return clampTo(g.yaw*0.014, 0.42), clampTo(g.pitch*0.016, 0.38)
+}
+
+// soft blanks out an offset smaller than dead, so a value resting near the middle stays put
+func soft(v, dead float32) float32 {
+	switch {
+	case v > dead:
+		return v - dead
+	case v < -dead:
+		return v + dead
+	}
+	return 0
+}
+
+// clampTo keeps v inside ±limit
+func clampTo(v, limit float32) float32 {
+	if v > limit {
+		return limit
+	}
+	if v < -limit {
+		return -limit
+	}
+	return v
+}
+
+// lift is how far the body sits lower while the face looks down, in design units
+func (g gaze) lift() float32 {
+	return float32(math.Sin(float64(g.pitch)*math.Pi/180)) * 1.8
+}
+
+// bodyTurn is how the body itself answers a turn: the side going round compresses while the
+// near side keeps its width, which is what a projection does. A circle only gets lopsided
+// slightly, a square, a star or a heart clearly turns
+func (g gaze) bodyTurn() (squeeze, turn float32) {
+	swing := float32(math.Sin(float64(g.yaw) * math.Pi / 180))
+	return 1 - 0.1*float32(math.Abs(float64(swing))), 0.55 * swing
+}
+
+// lean is the body's own turn in degrees, in the drawing's clockwise sense: the face follows
+// the body, so a roll tilts the whole character rather than only its eyes
+func (g gaze) lean() float32 { return -g.roll }
 
 func settle(shown [moodCount]float32) pose {
 	top, second := 0, -1
@@ -309,51 +483,80 @@ func settle(shown [moodCount]float32) pose {
 	}
 }
 
-// idle adds the small time-driven motions: open-eyed expressions blink, a working one
-// glances side to side, a bubble bobs. It returns when the next repaint is due
-func idle(p *pose, seed uint32, now time.Time) time.Duration {
-	next := time.Hour
+// frameFor is how often an expression's drift needs drawing. The two that have nothing to
+// report move so little that a third of the frames would be the same, and a window with a
+// few dozen characters in it should not pay to draw them
+func frameFor(m mood) time.Duration {
+	if m == moodCaughtUp || m == moodUnknown {
+		return 3 * driftFrame
+	}
+	return driftFrame
+}
+
+// idle adds the small time-driven motions: open-eyed expressions blink, the bubble bobs, and
+// drift decides where the character is looking and how it holds itself
+func idle(p *pose, seed uint32, now time.Time) {
 	ms := now.UnixMilli() + int64(seed%7919)
+	p.blink = 1
 
 	if p.mood == moodNeedsYou || p.mood == moodWorking {
 		period := int64(3400 + seed%1800)
 		at := time.Duration(ms%period) * time.Millisecond
 		if at < blinkSpan {
 			p.blink = float32(1 - math.Sin(float64(at)/float64(blinkSpan)*math.Pi))
-			next = idleFrame
-		} else {
-			next = min(next, time.Duration(period)*time.Millisecond-at)
 		}
 	}
-	if p.mood == moodWorking {
-		var wait time.Duration
-		p.glance, wait = glance(ms)
-		next = min(next, wait)
-	}
+
+	p.gaze, p.breath, p.lift = drift(p.mood, seed, float64(ms)/1000)
+
 	if p.bubble > 0 {
 		t := float64(ms%nudgeEvery.Milliseconds()) / float64(nudgeEvery.Milliseconds())
 		p.nudge = ease(1 - math.Abs(2*t-1))
-		next = idleFrame
 	}
-	return next
 }
 
-// glance keeps a working character looking right at the task most of the time, with an
-// occasional glance left
-func glance(ms int64) (float32, time.Duration) {
-	const hold, look, reach = 2200 * time.Millisecond, 700 * time.Millisecond, -7
-	period := hold + glanceSpan + look + glanceSpan
-	at := time.Duration(ms%period.Milliseconds()) * time.Millisecond
-	switch {
-	case at < hold:
-		return 0, hold - at
-	case at < hold+glanceSpan:
-		return reach * ease(float64(at-hold)/float64(glanceSpan)), idleFrame
-	case at < hold+glanceSpan+look:
-		return reach, hold + glanceSpan + look - at
-	default:
-		return reach * (1 - ease(float64(at-hold-glanceSpan-look)/float64(glanceSpan))), idleFrame
+// drift is where a character is looking, how far it has breathed out and how far it has risen.
+// Each expression moves on its own tempo and leans on its own axis, so a working character
+// scans, one that needs you bobs at you, and one that is caught up dozes; every period is a
+// different length, so the same small motion never comes round again
+func drift(m mood, seed uint32, seconds float64) (gaze, float32, float32) {
+	phase := float64(seed%360) * math.Pi / 180
+	wobble := func(period, offset float64) float64 {
+		return math.Sin(2*math.Pi*seconds/period + phase + offset)
 	}
+
+	// how far each expression looks, along which axis, and how fast it does it
+	var yaw, pitch, roll, tempo float64
+	switch m {
+	case moodWorking: // reading down a task: wide, mostly sideways, unhurried
+		yaw, pitch, roll, tempo = 9.0, 2.0, 3.0, 1.0
+	case moodNeedsYou: // trying to catch your eye: quicker, more vertical, with a bob
+		yaw, pitch, roll, tempo = 7.0, 6.0, 3.5, 0.62
+	case moodToRead: // waiting to be read: slow, and it tilts its head
+		yaw, pitch, roll, tempo = 5.0, 3.0, 6.0, 1.5
+	case moodUnknown: // nothing to report, and it doesn't pretend otherwise
+		yaw, pitch, roll, tempo = 1.2, 0.8, 0.5, 1.8
+	default: // caught up: dozing
+		yaw, pitch, roll, tempo = 3.5, 2.0, 1.5, 1.9
+	}
+
+	// every character rests a little off centre, so a row of them isn't a row of stares
+	rest := float64(seed%7)*0.9 - 2.7
+	g := gaze{
+		yaw:   float32(rest + yaw*(0.68*wobble(6.3*tempo, 0)+0.32*wobble(2.9*tempo, 1.1))),
+		pitch: float32(-1.2 + pitch*(0.7*wobble(5.1*tempo, 2.1)+0.3*wobble(3.1*tempo, 0.6))),
+		roll:  float32(roll * wobble(8.7*tempo, 0.9)),
+	}
+	var lift float64
+	if m == moodWorking {
+		// the slow sweep is what reads as reading down the task
+		g.yaw += float32(4.5 * wobble(5.7, 2.4))
+	}
+	if m == moodNeedsYou {
+		// a small bob, the way something waves at you
+		lift = 1.1 * math.Sin(2*math.Pi*seconds/2.2+phase)
+	}
+	return g, float32(0.01 * math.Sin(2*math.Pi*seconds/3.4)), float32(lift)
 }
 
 func ease(t float64) float32 { return float32(0.5 - 0.5*math.Cos(t*math.Pi)) }
@@ -367,14 +570,17 @@ type shape struct {
 	u        float32
 	cos, sin float32
 	pivot    float32
-	sy       float32
+	sx, sy   float32
+	// turn bends the shape across its width, so the side that has gone round compresses
+	// while the side facing you keeps its size: the flat stand-in for a projection
+	turn float32
 	// spin is a part's own rotation, such as a slanted eyebrow
 	spin *[4]float32
 }
 
 func newShape(cx, cy, u, degrees float32) *shape {
 	cos, sin := turn(degrees)
-	return &shape{cx: cx, cy: cy, u: u, cos: cos, sin: sin, sy: 1}
+	return &shape{cx: cx, cy: cy, u: u, cos: cos, sin: sin, sx: 1, sy: 1}
 }
 
 func turn(degrees float32) (float32, float32) {
@@ -389,8 +595,19 @@ func (s *shape) at(x, y float32) (float32, float32) {
 		x, y = ox+dx*cos-dy*sin, oy+dx*sin+dy*cos
 	}
 	y = s.pivot + (y-s.pivot)*s.sy
-	x, y = x*s.u, y*s.u
+	if s.turn != 0 {
+		x -= s.turn * x * x / faceRadius
+	}
+	x, y = x*s.sx*s.u, y*s.u
 	return s.cx + x*s.cos - y*s.sin, s.cy + x*s.sin + y*s.cos
+}
+
+// tilted copies the shape so a part is turned about its own centre
+func (s *shape) tilted(x, y, degrees float32) *shape {
+	out := *s
+	cos, sin := turn(degrees)
+	out.spin = &[4]float32{x, y, cos, sin}
+	return &out
 }
 
 func (s *shape) move(x, y float32) { s.path.MoveTo(s.at(x, y)) }
@@ -447,12 +664,45 @@ func (s *shape) arc(x, base, rx, ry float32) {
 	s.cube(x+rx*kappa, base+ry, x+rx, base+ry*kappa, x+rx, base)
 }
 
+// arcBand adds a filled line along an arc, with round ends, keeping the width of a stroke.
+// It is drawn by hand because StrokePath outlines an open curve by running the polyline back
+// over itself, and on a line this small the filler's winding at the round ends was a coin
+// toss: the ends came and went as the drawing moved by less than a pixel
+func (s *shape) arcBand(x, base, rx, ry, w float32) {
+	r := w / 2
+	side := float32(1) // the way the arc bows: down for a smile, up for a closed eye
+	if ry < 0 {
+		side = -1
+	}
+	// the edges keep the line's width all the way along, so they are the arc with the radius
+	// grown and shrunk by half of it, not the arc moved down: moving it would squeeze the line
+	// to nothing where the arc stands on end
+	outer, inner := rx+r, rx-r
+	high, low := ry+side*r, ry-side*r
+	turn := -side * r // which way the round ends go round
+
+	s.move(x-outer, base)
+	s.cube(x-outer, base+high*kappa, x-outer*kappa, base+high, x, base+high)
+	s.cube(x+outer*kappa, base+high, x+outer, base+high*kappa, x+outer, base)
+	s.cube(x+outer, base+turn*kappa, x+rx+r*kappa, base+turn, x+rx, base+turn)
+	s.cube(x+rx-r*kappa, base+turn, x+inner, base+turn*kappa, x+inner, base)
+	s.cube(x+inner, base+low*kappa, x+inner*kappa, base+low, x, base+low)
+	s.cube(x-inner*kappa, base+low, x-inner, base+low*kappa, x-inner, base)
+	s.cube(x-inner, base+turn*kappa, x-rx-r*kappa, base+turn, x-rx, base+turn)
+	s.cube(x-rx+r*kappa, base+turn, x-outer, base+turn*kappa, x-outer, base)
+	s.path.Close()
+}
+
 func paintAvatar(pt *ui.Painter, r ui.Rect, ch character, p pose, pr prop) {
 	u := r.W / 64
-	cx, cy := r.X+r.W/2, r.Y+r.H/2
+	cx, cy := r.X+r.W/2, r.Y+r.H/2+(p.gaze.lift()-p.lift)*u
 
 	b := ch.body()
-	body := newShape(cx, cy, u, b.rotate)
+	body := newShape(cx, cy, u, b.rotate+p.gaze.lean())
+	squeeze, turn := p.gaze.bodyTurn()
+	// Breathing keeps the body's volume: it widens by what it flattens
+	body.pivot, body.sx, body.sy = 0, (1+p.breath)*squeeze, 1-p.breath
+	body.turn = turn
 	if len(b.outline) > 0 {
 		body.move(b.outline[0].x, b.outline[0].y)
 		for _, q := range b.outline[1:] {
@@ -474,7 +724,9 @@ func paintAvatar(pt *ui.Painter, r ui.Rect, ch character, p pose, pr prop) {
 	}
 	pt.FillPath(&body.path, ch.color())
 
-	paintFace(pt, newShape(cx, cy+b.faceY*u, u, b.rotate), p, faceLine(faceInk(ch.color())))
+	face := newShape(cx, cy+b.faceY*u, u, b.rotate+p.gaze.lean())
+	face.sx = squeeze
+	paintFace(pt, face, p, faceLine(faceInk(ch.color())))
 
 	if p.bubble > 0.01 && pr.glyph != "" {
 		paintBubble(pt, r, u, pr.glyph, p.bubble, p.nudge)
@@ -502,48 +754,59 @@ func paintFace(pt *ui.Painter, base *shape, p pose, line ui.Color) {
 
 	switch p.mood {
 	case moodNeedsYou:
+		eyes := p.gaze.eyes(11, 8, 10)
+		// the brows sit on the face too, so they travel with the eyes
+		dx, dy := faceOffset(p.gaze)
 		brows := layer(false)
-		brows.pill(-11.5, -17.5, 13, 3, -16)
-		brows.pill(10.5, -17.5, 13, 3, 16)
+		brows.pill(-11.5+dx, -17.5+dy, 13, 3, -16)
+		brows.pill(10.5+dx, -17.5+dy, 13, 3, 16)
 		pt.FillPath(&brows.path, line)
-		paintEyes(pt, layer(true), 11, 8, 10, 0, -3, 4, 5)
+		lx, ly := p.gaze.pupilLook()
+		paintEyes(pt, layer(true), eyes, lx, -0.2+ly, 0.5, 0.5)
 	case moodWorking:
-		paintEyes(pt, layer(true), 10.5, 7.5, 9, 3.5+p.glance, 1.5, 4, 4.5)
+		// The pupil sits forward, against the eye's far edge, as the design has it: a working
+		// character stares at its task rather than at you, and the gaze turns the eyes instead
+		paintEyes(pt, layer(true), p.gaze.eyes(10.5, 7.5, 9), 0.47, 0.17, 0.53, 0.5)
 	case moodToRead:
-		eyes := layer(false)
-		eyes.arc(-11.5, 0, 4.75, -6.25)
-		eyes.arc(11.5, 0, 4.75, -6.25)
-		pt.StrokePath(&eyes.path, 3.5*base.u, line)
+		// closed eyes still sit on the face, so they travel and tilt with it
+		dx, dy := faceOffset(p.gaze)
+		for _, e := range p.gaze.eyes(11.5, 4.75, 6.25) {
+			eye := layer(false).tilted(e.x, e.y, e.tilt)
+			eye.arcBand(e.x, e.y, e.rx, -e.ry, 3.5)
+			pt.FillPath(&eye.path, line)
+		}
 		mouth := layer(false)
-		mouth.arc(0, 5, 4.5, 4.5)
-		pt.StrokePath(&mouth.path, 3*base.u, line)
-	case moodUnknown:
-		// A level stare and a flat mouth: nothing to report, and it doesn't pretend otherwise
-		lids := layer(false)
-		lids.pill(-11.5, -1.5, 11, 3, 0)
-		lids.pill(11.5, -1.5, 11, 3, 0)
-		pt.FillPath(&lids.path, line)
-		mouth := layer(false)
-		mouth.pill(0, 6, 9, 2.5, 0)
+		mouth.arcBand(dx, 5+dy, 4.5, 4.5, 3)
 		pt.FillPath(&mouth.path, line)
 	default:
-		lids := layer(false)
-		lids.pill(-11.5, -0.5, 13, 3, 0)
-		lids.pill(11.5, -0.5, 13, 3, 0)
-		pt.FillPath(&lids.path, line)
+		// A level stare and a flat mouth, for both what spark can't read and a project with
+		// nothing left to do: it doesn't pretend otherwise either way
+		dx, dy := faceOffset(p.gaze)
+		for _, e := range p.gaze.eyes(11.5, 5.5, 1.5) {
+			lid := layer(false).tilted(e.x, e.y, e.tilt)
+			lid.pill(e.x, e.y+2.5, 11, 3, 0)
+			pt.FillPath(&lid.path, line)
+		}
+		mouth := layer(false)
+		mouth.pill(dx, 6+dy, 9, 2.5, 0)
+		pt.FillPath(&mouth.path, line)
 	}
 }
 
-// paintEyes draws a pair of eye whites with pupils; dx is each centre's distance from the
-// midline and (px, py) the pupil's offset within the white
-func paintEyes(pt *ui.Painter, s *shape, dx, rx, ry, px, py, prx, pry float32) {
-	pupils := *s
-	for _, side := range []float32{-1, 1} {
-		s.ellipse(side*dx, -2, rx, ry)
-		pupils.ellipse(side*dx+px, -2+py, prx, pry)
+// paintEyes draws a pair of eye whites with pupils, each one placed, narrowed and tilted by
+// the sphere the face sits on; ox and oy are the pupil's offset as a share of the eye, prx
+// and pry its size as a share of the eye's
+func paintEyes(pt *ui.Painter, s *shape, eyes [2]eyeOnFace, ox, oy, prx, pry float32) {
+	for _, e := range eyes {
+		white := s.tilted(e.x, e.y, e.tilt)
+		white.ellipse(e.x, e.y, e.rx, e.ry)
+		pt.FillPath(&white.path, eyeWhite)
+
+		px, py := e.x+e.rx*ox, e.y+e.ry*oy
+		pupil := s.tilted(px, py, e.tilt)
+		pupil.ellipse(px, py, e.rx*prx, e.ry*pry)
+		pt.FillPath(&pupil.path, eyeInk)
 	}
-	pt.FillPath(&s.path, eyeWhite)
-	pt.FillPath(&pupils.path, eyeInk)
 }
 
 // paintBubble draws the white bubble at the upper right, tapering to a point at its lower

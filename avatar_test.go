@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"testing"
@@ -145,14 +146,104 @@ func TestBodiesStayInsideTheFrame(t *testing.T) {
 	}
 }
 
-func TestGlanceStaysInsideTheEye(t *testing.T) {
-	const base = 3.5
-	for ms := int64(0); ms < 4000; ms += 10 {
-		dx, _ := glance(ms)
-		if x := base + dx; x < -3.5 || x > 3.5 {
-			t.Fatalf("pupil at %v leaves the eye at %dms", x, ms)
+// TestGazeLooksTheWayItSays keeps the angles honest: yaw to the right moves the eyes right,
+// pitch down moves them down, and a roll leans the body the way the eyes lean
+func TestGazeLooksTheWayItSays(t *testing.T) {
+	rest := gaze{}.eyes(10.5, 7.5, 9)
+	mid := func(e [2]eyeOnFace) (float32, float32) { return (e[0].x + e[1].x) / 2, (e[0].y + e[1].y) / 2 }
+	restX, restY := mid(rest)
+
+	rx, _ := mid((gaze{yaw: 20}).eyes(10.5, 7.5, 9))
+	if rx <= restX+1 {
+		t.Errorf("yaw 20° left the eyes at x %.2f, want them right of %.2f", rx, restX)
+	}
+	if right := (gaze{yaw: 20}).eyes(10.5, 7.5, 9)[1]; right.rx >= rest[1].rx {
+		t.Errorf("the eye turned toward the edge kept its width: %.2f vs %.2f", right.rx, rest[1].rx)
+	}
+
+	_, downY := mid((gaze{pitch: 20}).eyes(10.5, 7.5, 9))
+	if downY <= restY+1 {
+		t.Errorf("pitch 20° put the eyes at design y %.2f, want them below %.2f", downY, restY)
+	}
+
+	if lean := (gaze{roll: 10}).lean(); lean >= 0 {
+		t.Errorf("a counter-clockwise roll leans the body by %.1f°, want the drawing's clockwise sense", lean)
+	}
+}
+
+// TestEyesStayOnTheFace keeps the eyes from sliding off the body as the face turns
+func TestEyesStayOnTheFace(t *testing.T) {
+	for _, yaw := range []float32{-60, -40, -20, 0, 20, 40, 60} {
+		for _, pitch := range []float32{-30, -15, 0, 15, 30} {
+			for _, e := range (gaze{yaw: yaw, pitch: pitch}).eyes(11, 8, 10) {
+				if float32(math.Abs(float64(e.x)))+e.rx > faceRadius {
+					t.Fatalf("yaw %v pitch %v: eye reaches %.1f across, past the %d-unit face", yaw, pitch, float32(math.Abs(float64(e.x)))+e.rx, faceRadius)
+				}
+				if float32(math.Abs(float64(e.y)))+e.ry > faceRadius {
+					t.Fatalf("yaw %v pitch %v: eye reaches %.1f down, past the %d-unit face", yaw, pitch, float32(math.Abs(float64(e.y)))+e.ry, faceRadius)
+				}
+			}
 		}
 	}
+}
+
+// AVATAR_POSES_PNG=out.png go test -run TestAvatarPoses . renders a sheet of gaze poses to an
+// image, for checking which way the eyes actually go
+func TestAvatarPoses(t *testing.T) {
+	path := os.Getenv("AVATAR_POSES_PNG")
+	if path == "" {
+		t.Skip("set AVATAR_POSES_PNG to render the pose sheet")
+	}
+
+	type row struct {
+		name string
+		mood mood
+		size float32
+	}
+	rows := []row{
+		{"Working", moodWorking, 48},
+		{"Needs you", moodNeedsYou, 48},
+		{"All caught up", moodCaughtUp, 48},
+		{"Working 26", moodWorking, 26},
+		{"Needs you 26", moodNeedsYou, 26},
+	}
+	yaws := []float32{-30, -15, 0, 15, 30}
+
+	const pad, colW, rowH = 16, 62, 62
+	width := pad*2 + 110 + len(yaws)*colW
+	height := pad*2 + 22 + len(rows)*rowH
+
+	ch := character{hue: 7, shape: bodyIndex("square")}
+	view := func(c *ui.Context) {
+		ui.Box(c).Fill().Background(ui.Hex("#FFFFFF")).Padding(pad).Children(func() {
+			ui.Row(c).Height(22).Gap(0).Children(func() {
+				ui.Text(c, "").Width(110)
+				for _, y := range yaws {
+					ui.Text(c, fmt.Sprintf("yaw %+d", int(y))).Width(colW).FontSize(10).TextColor(ui.Hex("#888888"))
+				}
+			})
+			for r, row := range rows {
+				ui.Row(c).Height(rowH).Gap(0).Children(func() {
+					ui.Text(c, row.name).Width(110).FontSize(10).TextColor(ui.Hex("#888888"))
+					for col, yaw := range yaws {
+						size := row.size
+						g := gaze{yaw: yaw}
+						ui.Row(c.Key(fmt.Sprint(r, "-", col))).Width(colW).Center().Children(func() {
+							ui.Box(c).Size(size, size).Draw(func(pt *ui.Painter, box ui.Rect) {
+								paintAvatar(pt, box, ch, pose{mood: row.mood, squash: 1, blink: 1, gaze: g}, prop{})
+							})
+						})
+					}
+				})
+			}
+		})
+	}
+
+	tt := ui.NewTester(view, width, height)
+	tt.SetScale(2)
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	tt.Frame()
+	writePNG(t, path, tt.Image())
 }
 
 // AVATAR_PNG=out.png go test -run TestAvatarGallery . renders the preview window to an image
@@ -228,4 +319,60 @@ func badgeDigitOffset(size float32, count int) (dx, dy float64) {
 	dx = float64(digit[0]+digit[2]-dark[0]-dark[2]) / (2 * scale)
 	dy = float64(digit[1]+digit[3]-dark[1]-dark[3]) / (2 * scale)
 	return dx, dy
+}
+
+// AVATAR_DRIFT_PNG=out.png go test -run TestAvatarDriftSheet . renders what each expression
+// actually does over its cycle, at the sizes it is drawn at
+func TestAvatarDriftSheet(t *testing.T) {
+	path := os.Getenv("AVATAR_DRIFT_PNG")
+	if path == "" {
+		t.Skip("set AVATAR_DRIFT_PNG to render the drift sheet")
+	}
+	rows := []struct {
+		name string
+		mood mood
+		size float32
+	}{
+		{"Working 40", moodWorking, 40},
+		{"Needs you 40", moodNeedsYou, 40},
+		{"To read 40", moodToRead, 40},
+		{"Caught up 40", moodCaughtUp, 40},
+		{"Working 26", moodWorking, 26},
+		{"To read 26", moodToRead, 26},
+	}
+	const frames, pad, colW, rowH = 13, 16, 42, 52
+
+	ch := character{hue: 7, shape: bodyIndex("square")}
+	view := func(c *ui.Context) {
+		ui.Box(c).Fill().Background(ui.Hex("#FFFFFF")).Padding(pad).Children(func() {
+			ui.Row(c).Height(20).Gap(0).Children(func() {
+				ui.Text(c, "").Width(96)
+				for f := range frames {
+					ui.Text(c, fmt.Sprintf("%.1fs", float64(f)*0.5)).Width(colW).FontSize(9).TextColor(ui.Hex("#888888"))
+				}
+			})
+			for r, row := range rows {
+				ui.Row(c).Height(rowH).Gap(0).Children(func() {
+					ui.Text(c, row.name).Width(96).FontSize(9).TextColor(ui.Hex("#888888"))
+					for f := range frames {
+						g, breath, lift := drift(row.mood, 3, float64(f)*0.5)
+						p := pose{mood: row.mood, squash: 1, blink: 1, gaze: g, breath: breath, lift: lift}
+						ui.Row(c.Key(fmt.Sprint(r, "-", f))).Width(colW).Center().Children(func() {
+							ui.Box(c).Size(row.size, row.size).Draw(func(pt *ui.Painter, box ui.Rect) {
+								paintAvatar(pt, box, ch, p, prop{})
+							})
+						})
+					}
+				})
+			}
+		})
+	}
+
+	width := pad*2 + 96 + frames*colW
+	height := pad*2 + 20 + len(rows)*rowH
+	tt := ui.NewTester(view, width, height)
+	tt.SetScale(2)
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	tt.Frame()
+	writePNG(t, path, tt.Image())
 }
