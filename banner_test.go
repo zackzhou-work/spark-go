@@ -109,12 +109,12 @@ func demoApp() *app {
 		{ProjectName: "data-pipeline", Sessions: []monitor.SessionItem{
 			{ID: "local_4", Title: "Profile the nightly aggregation job", State: monitor.Running, ActivityAt: now, IsToday: true},
 			{ID: "local_5", Title: "Rebuild the ingest pipeline", State: monitor.Completed, ActivityAt: ago(time.Hour), IsToday: true},
-			{ID: "01a13f06-5941-7138-a5d7-056c36fd2894", Source: monitor.SourcePi, Title: "Compact the nightly rollups", State: monitor.Running, Pane: "w4:pF", ActivityAt: now, IsToday: true},
+			{ID: "01a13f06-5941-7138-a5d7-056c36fd2894", Source: monitor.SourcePi, Title: "Compact the nightly rollups", State: monitor.Running, Terminal: "w4:pF", ActivityAt: now, IsToday: true},
 		}},
 		{ProjectName: "docs-site", Sessions: []monitor.SessionItem{
 			{ID: "local_6", Title: "Rewrite the getting started guide", State: monitor.Unread, ActivityAt: ago(38 * time.Minute), IsToday: true},
 			{ID: "local_7", Title: "Add search to the API reference", State: monitor.Completed, ActivityAt: ago(75 * time.Hour)},
-			// pi is sitting at its prompt in a terminal, so the row has no pane to jump to
+			// pi is sitting at its prompt in a terminal, so the row has no terminal to jump to
 			{ID: "01a13919-4037-72b8-8b7e-c47d3459020f", Source: monitor.SourcePi, Title: "Trace the slow ranking query", State: monitor.Completed, ActivityAt: ago(11 * time.Hour), IsToday: true},
 		}},
 		{ProjectName: "search-api", Sessions: []monitor.SessionItem{

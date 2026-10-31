@@ -802,12 +802,15 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, st rowStyle, no
 	row := ui.Row(c).Height(st.height).Gap(st.gap).Padding(0, st.padding).Radius(st.radius).
 		Label(s.Title + ", " + s.State.String())
 	hovered := row.Hovered()
-	// A row is a target only where clicking goes somewhere: a pi session outside Herdr has
-	// no window for spark to bring forward
+	// A row is a target only where clicking goes somewhere: a pi session no terminal runs has
+	// no window for spark to show
 	if s.Jumpable() {
 		row.Cursor(ui.CursorPointer)
 		row.OnClick(func() { jumpToSession(c, s) })
 		hoverFill(row, hovered, p.rowHover)
+	} else if reason := noJumpReason(s); reason != "" {
+		// Nothing on the row itself has room to explain the dead click, so hovering says it
+		row.Tooltip(reason)
 	}
 
 	when := relativeTime(s.ActivityAt, now)
@@ -836,6 +839,17 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, st rowStyle, no
 			newPill(c, p, st.pill)
 		}
 	})
+}
+
+// noJumpReason says why a row with nowhere to go isn't a target, in the reader's terms
+func noJumpReason(s monitor.SessionItem) string {
+	switch s.Source {
+	case monitor.SourcePi:
+		return "Nothing to open: this session isn’t running in Herdr"
+	case monitor.SourceCursor:
+		return "Nothing to open: spark hasn’t verified this Cursor build’s session link"
+	}
+	return ""
 }
 
 // newPill is the black New at the end of an unread session row
@@ -1404,7 +1418,7 @@ func plural(n int, noun string) string {
 }
 
 // jumpToSession takes the user back to a session: Claude and Codex have desktop deep links,
-// and a pi session is a pane in Herdr
+// and a pi session is a terminal in Herdr
 func jumpToSession(c *ui.Context, s monitor.SessionItem) {
 	// Each source goes to its own app: a Cursor ID must never reach Claude's link builder
 	var (
@@ -1429,11 +1443,11 @@ func jumpToSession(c *ui.Context, s monitor.SessionItem) {
 	openURL(c, url)
 }
 
-// jumpToPi focuses the pane a pi session runs in, which also marks it seen in Herdr. It
+// jumpToPi shows the terminal a pi session runs in, which is also how Herdr marks it seen. It
 // runs off the UI thread: a socket that stopped answering must not freeze the window
 func jumpToPi(s monitor.SessionItem) {
-	if s.Pane == "" {
-		log.Printf("[Jump] no Herdr pane for %s, skipping", s.ID)
+	if s.Terminal == "" {
+		log.Printf("[Jump] no Herdr terminal for %s, skipping", s.ID)
 		return
 	}
 	go func() {
@@ -1441,13 +1455,12 @@ func jumpToPi(s monitor.SessionItem) {
 		if err != nil {
 			return
 		}
-		client := monitor.HerdrClient{SocketPath: monitor.HerdrSocketPath(home)}
-		if err := client.FocusPane(s.Pane); err != nil {
-			log.Printf("[Jump] focusing %s failed: %v", s.Pane, err)
+		client := monitor.HerdrApp{SocketPath: monitor.HerdrAppSocketPath(home)}
+		if err := client.FocusTerminal(s.Terminal); err != nil {
+			log.Printf("[Jump] showing %s failed: %v", s.Terminal, err)
 			return
 		}
-		// Herdr focuses the pane inside its own window; the window itself still has to come
-		// forward
+		// The window shows the terminal inside itself; it still has to come forward
 		activateApp("Herdr")
 	}()
 }

@@ -57,10 +57,10 @@ type Scanner struct {
 	CodexHome    string
 	CodexHookDir string
 	// PiRoot holds pi's session files, PiReceiptDir what spark's pi extension reports, and
-	// HerdrSocket the pane state Herdr keeps for the pi sessions it hosts
+	// HerdrCore the socket the core running those pi terminals answers on
 	PiRoot        string
 	PiReceiptDir  string
-	HerdrSocket   string
+	HerdrCore     string
 	cpu           *cpuSampler
 	piCache       map[string]piCached
 	herdrErrAt    time.Time
@@ -101,7 +101,7 @@ func NewScanner() *Scanner {
 		CodexHookDir: CodexHookDir(home),
 		PiRoot:       PiSessionsRoot(home),
 		PiReceiptDir: PiReceiptDir(home),
-		HerdrSocket:  HerdrSocketPath(home),
+		HerdrCore:    HerdrCoreSocketPath(home),
 		cpu:          newCPUSampler(),
 
 		CursorAppPath:    CursorAppPath(),

@@ -385,14 +385,14 @@ func TestByDaySplitsAtMidnight(t *testing.T) {
 
 // SPARK_SCREENS=dir go test -run TestScreens . renders each screen to an image without a
 // window, for comparing against the design
-// piWaiting adds a pi project whose session is waiting on a question, in Herdr when a pane
-// is named: what its waiting card can and can't do hangs off that
-func piWaiting(a *app, pane string) {
+// piWaiting adds a pi project whose session is waiting on a question, in Herdr when a
+// terminal is named: what its waiting card can and can't do hangs off that
+func piWaiting(a *app, terminal string) {
 	a.groups = append(a.groups, monitor.ProjectGroup{ProjectName: "rag", Sessions: []monitor.SessionItem{
 		{
 			ID: "01a13ed4-da48-74ac-b607-dc2344b528b0", Source: monitor.SourcePi,
 			Title: "Migrate the router to the new gateway", State: monitor.Waiting,
-			WaitReason: monitor.WaitQuestion, Pane: pane,
+			WaitReason: monitor.WaitQuestion, Terminal: terminal,
 			ActivityAt: time.Now().Add(-2 * time.Minute), IsToday: true,
 		},
 		{ID: "01a13f06-5941-7138-a5d7-056c36fd2894", Source: monitor.SourcePi, Title: "Backfill events for September",
@@ -417,9 +417,9 @@ func TestScreens(t *testing.T) {
 		{"today-dark", 360, 640, true, func(a *app) {}},
 		{"all", 360, 640, false, func(a *app) { a.filter = filterAll }},
 		{"project", 360, 640, false, func(a *app) { a.project = "search-api" }},
-		{"project-pi", 360, 640, false, func(a *app) { piWaiting(a, "w4:pC"); a.project = "rag" }},
+		{"project-pi", 360, 640, false, func(a *app) { piWaiting(a, "t4"); a.project = "rag" }},
 		{"project-pi-nowhere", 360, 640, false, func(a *app) { piWaiting(a, ""); a.project = "rag" }},
-		{"project-pi-narrow", 300, 640, false, func(a *app) { piWaiting(a, "w4:pC"); a.project = "rag" }},
+		{"project-pi-narrow", 300, 640, false, func(a *app) { piWaiting(a, "t4"); a.project = "rag" }},
 		{"empty", 360, 640, false, func(a *app) { a.groups = nil }},
 		{"narrow", 280, 600, false, func(a *app) {}},
 		{"narrow-min", minWidth, 600, false, func(a *app) {}},

@@ -23,8 +23,8 @@ func shortSocketPath(t *testing.T) string {
 	return filepath.Join(dir, "h.sock")
 }
 
-// fakeHerdr serves one request per connection and returns what reply says
-func fakeHerdr(t *testing.T, reply func(method string, params map[string]any) string) (HerdrClient, *[]string) {
+// fakeSocket serves one request per connection and returns what reply says
+func fakeSocket(t *testing.T, reply func(request map[string]any) string) (string, *[]map[string]any) {
 	t.Helper()
 	path := shortSocketPath(t)
 	ln, err := net.Listen("unix", path)
@@ -33,7 +33,7 @@ func fakeHerdr(t *testing.T, reply func(method string, params map[string]any) st
 	}
 	t.Cleanup(func() { ln.Close() })
 
-	var seen []string
+	var seen []map[string]any
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -46,18 +46,15 @@ func fakeHerdr(t *testing.T, reply func(method string, params map[string]any) st
 				if err != nil {
 					return
 				}
-				var req struct {
-					Method string         `json:"method"`
-					Params map[string]any `json:"params"`
-				}
+				var req map[string]any
 				if json.Unmarshal(line, &req) != nil {
 					return
 				}
-				seen = append(seen, req.Method)
+				seen = append(seen, req)
 				if reply != nil {
-					// One line, as the real server sends it
+					// One line, as the real sockets answer
 					var compact any
-					if json.Unmarshal([]byte(reply(req.Method, req.Params)), &compact) != nil {
+					if json.Unmarshal([]byte(reply(req)), &compact) != nil {
 						return
 					}
 					body, _ := json.Marshal(compact)
@@ -66,74 +63,96 @@ func fakeHerdr(t *testing.T, reply func(method string, params map[string]any) st
 			}()
 		}
 	}()
-	return HerdrClient{SocketPath: path}, &seen
+	return path, &seen
 }
 
-func TestHerdrAgentsKeepsPiOnly(t *testing.T) {
-	client, _ := fakeHerdr(t, func(string, map[string]any) string {
-		return `{"id":"spark","result":{"type":"agent_list","agents":[
-			{"agent":"pi","pane_id":"w1:p1","agent_status":"working","focused":true,"cwd":"/tmp/spark-go",
-			 "agent_session":{"kind":"path","source":"herdr:pi","value":"/sessions/a.jsonl"}},
-			{"agent":"claude","pane_id":"w1:p2","agent_status":"idle","focused":false,
-			 "agent_session":{"value":"/elsewhere"}}]}}`
+func TestHerdrCoreTerminalsKeepsPiOnly(t *testing.T) {
+	path, seen := fakeSocket(t, func(map[string]any) string {
+		return `{"id":"spark","result":{"terminals":[
+			{"address":"t4","foreground":{"pid":67424},"status":{"app":"pi","state":"working"}},
+			{"address":"vps/t9","foreground":{"pid":67424},"status":{"app":"pi","state":"working"}},
+			{"address":"t5","foreground":{"pid":67425},"status":{"app":"claude","state":"idle"}},
+			{"address":"t6","foreground":{"pid":67426},"status":{"app":"pi","state":"blocked","kind":"question"}},
+			{"address":"t7","foreground":{"pid":67427}},
+			{"address":"t8","status":{"app":"pi","state":"idle"}}]}}`
 	})
 
-	agents, err := client.Agents()
+	terminals, err := (HerdrCore{SocketPath: path}).Terminals()
 	if err != nil {
-		t.Fatalf("Agents: %v", err)
+		t.Fatalf("Terminals: %v", err)
 	}
-	if len(agents) != 1 {
-		t.Fatalf("want only the pi agent, got %+v", agents)
+	if len(terminals) != 2 {
+		t.Fatalf("want the two local pi terminals that say what they run, got %+v", terminals)
 	}
-	got := agents[0]
-	if got.PaneID != "w1:p1" || got.Status != piWorking || !got.Focused {
+	if got := terminals[0]; got.Address != "t4" || got.PID != 67424 || got.Status != piWorking {
 		t.Errorf("wrong fields: %+v", got)
 	}
-	if got.SessionPath != "/sessions/a.jsonl" {
-		t.Errorf("wrong identity: %+v", got)
+	if got := terminals[1]; got.BlockKind != "question" || got.Status != piBlocked {
+		t.Errorf("wrong block: %+v", got)
+	}
+	if len(*seen) != 1 || (*seen)[0]["method"] != "terminal.list" {
+		t.Errorf("calls = %v", *seen)
 	}
 }
 
-func TestHerdrFocusPaneSendsTheTarget(t *testing.T) {
-	var target string
-	client, methods := fakeHerdr(t, func(_ string, params map[string]any) string {
-		target, _ = params["target"].(string)
-		return `{"id":"spark","result":{"type":"agent_info","agent":{"pane_id":"w2:p3"}}}`
+func TestHerdrCoreTerminalsReportsServerError(t *testing.T) {
+	path, _ := fakeSocket(t, func(map[string]any) string {
+		return `{"error":{"code":"-32601","message":"unknown method \"terminal.list\""}}`
 	})
 
-	if err := client.FocusPane("w2:p3"); err != nil {
-		t.Fatalf("FocusPane: %v", err)
-	}
-	if target != "w2:p3" {
-		t.Errorf("focus target = %q, want w2:p3", target)
-	}
-	if len(*methods) != 1 || (*methods)[0] != "agent.focus" {
-		t.Errorf("methods = %v", *methods)
-	}
-}
-
-func TestHerdrFocusPaneReportsServerError(t *testing.T) {
-	client, _ := fakeHerdr(t, func(string, map[string]any) string {
-		return `{"id":"spark","error":{"code":"agent_not_found","message":"agent target w9:p9 not found"}}`
-	})
-
-	err := client.FocusPane("w9:p9")
-	if err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := (HerdrCore{SocketPath: path}).Terminals(); err == nil ||
+		!strings.Contains(err.Error(), "unknown method") {
 		t.Fatalf("want the server's message, got %v", err)
 	}
 }
 
-func TestHerdrAgentsWithoutServer(t *testing.T) {
-	client := HerdrClient{SocketPath: shortSocketPath(t)}
-	if _, err := client.Agents(); err == nil {
-		t.Fatal("want an error when the socket is missing")
+// The window is asked for a command, not for JSON-RPC, and it answers ok or one error
+func TestHerdrAppFocusTerminalSendsTheCommand(t *testing.T) {
+	path, seen := fakeSocket(t, func(map[string]any) string {
+		return `{"ok":true}`
+	})
+
+	if err := (HerdrApp{SocketPath: path}).FocusTerminal("t4"); err != nil {
+		t.Fatalf("FocusTerminal: %v", err)
 	}
-	if HerdrAvailable(client.SocketPath) {
+	if len(*seen) != 1 {
+		t.Fatalf("calls = %v", *seen)
+	}
+	req := (*seen)[0]
+	if req["do"] != "agent.focus" {
+		t.Errorf("command = %v, want agent.focus", req["do"])
+	}
+	args, _ := req["args"].(map[string]any)
+	if args["terminal"] != "t4" {
+		t.Errorf("terminal = %v, want t4", args["terminal"])
+	}
+}
+
+func TestHerdrAppFocusTerminalReportsServerError(t *testing.T) {
+	path, _ := fakeSocket(t, func(map[string]any) string {
+		return `{"error":"no running terminal \"t99\""}`
+	})
+
+	err := (HerdrApp{SocketPath: path}).FocusTerminal("t99")
+	if err == nil || !strings.Contains(err.Error(), "no running terminal") {
+		t.Fatalf("want the window's message, got %v", err)
+	}
+}
+
+func TestHerdrWithoutServer(t *testing.T) {
+	missing := shortSocketPath(t)
+	if _, err := (HerdrCore{SocketPath: missing}).Terminals(); err == nil {
+		t.Error("want an error when the socket is missing")
+	}
+	if err := (HerdrApp{SocketPath: missing}).FocusTerminal("t4"); err == nil {
+		t.Error("want an error when the window's socket is missing")
+	}
+	if HerdrAvailable(missing) {
 		t.Error("a missing socket is not available")
 	}
 }
 
-func TestHerdrAgentsGivesUpOnASilentServer(t *testing.T) {
+func TestHerdrGivesUpOnASilentServer(t *testing.T) {
 	// A connected server that never answers must not hold the scan
 	path := shortSocketPath(t)
 	ln, err := net.Listen("unix", path)
@@ -150,7 +169,7 @@ func TestHerdrAgentsGivesUpOnASilentServer(t *testing.T) {
 	}()
 
 	start := time.Now()
-	if _, err := (HerdrClient{SocketPath: path}).Agents(); err == nil {
+	if _, err := (HerdrCore{SocketPath: path}).Terminals(); err == nil {
 		t.Fatal("want a timeout error")
 	}
 	if elapsed := time.Since(start); elapsed > 3*herdrTimeout {

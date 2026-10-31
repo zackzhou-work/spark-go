@@ -571,7 +571,7 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 		return nil
 	}
 	signals := ReadPiReceipts(s.PiReceiptDir)
-	herdr := s.herdrAgents(now)
+	terminals := s.herdrTerminals(now)
 	cutoff := now.Add(-piScanWindow)
 
 	var found []discovered
@@ -589,21 +589,22 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 			}
 			path := filepath.Join(root, dir.Name(), e.Name())
 			receipt, hasReceipt := signals.live[path]
-			host, hosted := herdr[path]
+			host, hosted := terminals[receipt.PID]
 			info, err := e.Info()
 			if err != nil {
 				continue
 			}
 			// An old file is history, unless something still reports on the session: a
 			// prompt left open for a week writes nothing and is still waiting for an answer
-			if info.ModTime().Before(cutoff) && !hasReceipt && !hosted {
+			if info.ModTime().Before(cutoff) && !hasReceipt {
 				continue
 			}
-			// A pi row is only worth showing while something is behind it: Herdr hosts its
-			// pane, or the extension says its process is alive. A session whose pi is gone can
-			// be neither opened nor reported on -- its turn can't move -- so it is history, and
-			// a row nothing can act on is noise
-			if !hosted && (!hasReceipt || receipt.Status == piExited) {
+			// A pi row is only worth showing while something is behind it: the extension says
+			// its process is alive, and that receipt is also the only thing that can name the
+			// terminal it runs in. A session whose pi is gone can be neither opened nor
+			// reported on -- its turn can't move -- so it is history, and a row nothing can act
+			// on is noise
+			if !hasReceipt || receipt.Status == piExited {
 				continue
 			}
 			session, ok := s.readPiSession(path)
@@ -612,15 +613,14 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 			}
 
 			// Herdr gets its status from the same events the extension reports, and only it
-			// knows whether the pane's tab has been looked at, so its word wins; the
-			// extension still supplies what a blocking dialog is asking for
+			// knows whether the terminal's tab has been looked at, so its word wins; the
+			// extension still supplies what a blocking dialog is asking for, which it sees for
+			// itself
 			live, ok := receipt, hasReceipt
 			if hosted && host.Status != herdrUnknown {
-				host.BlockKind, host.Tool = receipt.BlockKind, receipt.Tool
+				host.BlockKind = cmp.Or(receipt.BlockKind, host.BlockKind)
+				host.Tool = receipt.Tool
 				live, ok = host, true
-			}
-			if live.PaneID == "" {
-				live.PaneID = host.PaneID
 			}
 			state, reason := piSessionState(session, live, ok, signals.seen[path], now.UnixMilli())
 
@@ -634,7 +634,7 @@ func (s *Scanner) scanPi(now time.Time) []discovered {
 				WorkingDir: session.Cwd,
 				ActivityAt: activityAt,
 				IsToday:    state == Running || state == Waiting || isSameLocalDay(activityAt, now),
-				Pane:       herdr[path].PaneID,
+				Terminal:   host.Terminal,
 			}
 			found = append(found, discovered{projectName(session.Cwd, session.Title), item, session.ActivityAt})
 		}
@@ -673,11 +673,17 @@ func piSessionState(session PiSession, live piLive, ok bool, lastSeenMs, nowMs i
 	return Completed, WaitPermission
 }
 
-// piWaitReason tells an answer from an approval. The extension reports which dialog is up when
-// it is loaded. Without it, Herdr only says "blocked", and it means either an approval or a
-// question, so the session file decides: a question tool is left hanging in the last record
-// when that is what is waiting
+// piWaitReason tells an answer from an approval. Two reporters can say what a blocked
+// session is stuck on, in their own words: the extension names the dialog it can see, and
+// herdr-core only knows the kind. Without either, the session file decides: a question tool
+// is left hanging in the last record when that is what is waiting
 func piWaitReason(session PiSession, live piLive) WaitReason {
+	switch live.BlockKind {
+	case "question":
+		return WaitQuestion
+	case "permission", "auth":
+		return WaitPermission
+	}
 	if live.Tool == piAskTool || live.BlockKind == "select" || live.BlockKind == "input" ||
 		live.BlockKind == "editor" || live.BlockKind == "custom" {
 		return WaitQuestion
@@ -691,14 +697,16 @@ func piWaitReason(session PiSession, live piLive) WaitReason {
 	return WaitPermission
 }
 
-// herdrAgents maps the pi sessions Herdr hosts to their pane and state, and marks the one
-// in the focused pane as seen: Herdr is the only place a terminal session's "the user is
-// looking at it" moment can be observed
-func (s *Scanner) herdrAgents(now time.Time) map[string]piLive {
-	if !HerdrAvailable(s.HerdrSocket) {
+// herdrTerminals maps the pid each pi agent runs under to the terminal hosting it, which is
+// the only way to find a session's terminal: herdr-core doesn't say which session file a
+// terminal runs, and the extension's receipt is what carries the pid both sides agree on.
+// Herdr is also the only place a terminal session's "the user is looking at it" moment can
+// be observed: its done and idle tell a finished turn nobody saw from one they did
+func (s *Scanner) herdrTerminals(now time.Time) map[int]piLive {
+	if !HerdrAvailable(s.HerdrCore) {
 		return nil
 	}
-	agents, err := HerdrClient{SocketPath: s.HerdrSocket}.Agents()
+	terminals, err := HerdrCore{SocketPath: s.HerdrCore}.Terminals()
 	if err != nil {
 		if now.Sub(s.herdrErrAt) > time.Minute {
 			s.herdrErrAt = now
@@ -706,12 +714,9 @@ func (s *Scanner) herdrAgents(now time.Time) map[string]piLive {
 		}
 		return nil
 	}
-	out := make(map[string]piLive, len(agents))
-	for _, a := range agents {
-		if a.SessionPath == "" {
-			continue
-		}
-		out[a.SessionPath] = piLive{Status: a.Status, PaneID: a.PaneID, FromHerdr: true}
+	out := make(map[int]piLive, len(terminals))
+	for _, t := range terminals {
+		out[t.PID] = piLive{Status: t.Status, BlockKind: t.BlockKind, Terminal: t.Address, FromHerdr: true}
 	}
 	return out
 }

@@ -33,7 +33,7 @@ const (
 )
 
 // piLive is a live signal about one session: the extension's report on the pi process, or
-// Herdr's view of the pane it runs in
+// Herdr's view of the terminal it runs in
 type piLive struct {
 	Status string
 	// FromHerdr says the status is Herdr's, which distinguishes a finished turn the user has
@@ -41,7 +41,11 @@ type piLive struct {
 	FromHerdr bool
 	BlockKind string
 	Tool      string
-	PaneID    string
+	// PID is the pi process the report is about: the extension's own, or the foreground pid of
+	// the terminal Herdr matched it to
+	PID int
+	// Terminal is what showing the session asks for, empty when nothing can show it
+	Terminal string
 }
 
 // PiReceipt is what the extension writes, one file per session. Each write replaces the
@@ -127,7 +131,7 @@ func ReadPiReceipts(dir string) piReceipts {
 			}
 		}
 		for _, k := range keys {
-			out.live[k] = piLive{Status: r.State, BlockKind: r.BlockKind, Tool: r.Tool}
+			out.live[k] = piLive{Status: r.State, BlockKind: r.BlockKind, Tool: r.Tool, PID: r.PID}
 		}
 	}
 	return out

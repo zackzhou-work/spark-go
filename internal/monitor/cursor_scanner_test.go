@@ -23,7 +23,7 @@ func cursorTestScanner(t *testing.T, dbPath, userDir, eventsRoot, appPath string
 	s.CodexHookDir = filepath.Join(empty, "codex-hooks")
 	s.PiRoot = filepath.Join(empty, "pi")
 	s.PiReceiptDir = filepath.Join(empty, "pi-receipts")
-	s.HerdrSocket = filepath.Join(empty, "herdr.sock")
+	s.HerdrCore = filepath.Join(empty, "herdr-core.sock")
 	s.CursorDB = dbPath
 	s.CursorUserDir = userDir
 	s.CursorEventsRoot = eventsRoot

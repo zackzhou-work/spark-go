@@ -197,10 +197,10 @@ func TestScanRealSessions(t *testing.T) {
 		t.Logf("Project: %s (%d sessions)", g.ProjectName, len(g.Sessions))
 		for _, s := range g.Sessions {
 			// pi is the one source whose state depends on where it runs, so say what it
-			// found: a pane means clicking the row can go there
+			// found: a terminal means clicking the row can go there
 			extra := ""
 			if s.Source == SourcePi {
-				extra = fmt.Sprintf(" pane=%q", s.Pane)
+				extra = fmt.Sprintf(" terminal=%q", s.Terminal)
 			}
 			t.Logf("  - [%v] %s (%v, PID: %d, today=%v%s)", s.State, s.Title, s.Source, s.PID, s.IsToday, extra)
 		}

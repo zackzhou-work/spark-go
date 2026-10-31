@@ -103,8 +103,9 @@ type SessionItem struct {
 	WorkingDir string
 	ActivityAt time.Time
 	IsToday    bool
-	// Pane is the Herdr pane hosting the session, empty when there is nothing to focus
-	Pane string
+	// Terminal is the herdr-core terminal hosting the session, empty when there is nothing to
+	// show
+	Terminal string
 	// CanJumpCursor is set by the Cursor scanner only for a session whose private Agent link
 	// this build has verified; the row is static otherwise
 	CanJumpCursor bool
@@ -161,9 +162,9 @@ func SplitWaiting(groups []ProjectGroup) ([]PendingSession, []ProjectGroup) {
 func (s SessionItem) Jumpable() bool {
 	switch s.Source {
 	case SourcePi:
-		// A pi session has somewhere to go only while Herdr hosts its pane; anywhere else
-		// there is nothing to focus
-		return s.Pane != ""
+		// A pi session has somewhere to go only while herdr-core runs it in a terminal; an
+		// IDE or a bare terminal has no window for spark to show
+		return s.Terminal != ""
 	case SourceCursor:
 		return s.CanJumpCursor
 	default:

@@ -15,11 +15,11 @@ import (
 	"github.com/zackzhou-work/spark-go/internal/monitor"
 )
 
-// piWaitingSession is a pi session stuck on a question, in Herdr when pane is set
-func piWaitingSession(id, title, pane string) monitor.SessionItem {
+// piWaitingSession is a pi session stuck on a question, in Herdr when a terminal is named
+func piWaitingSession(id, title, terminal string) monitor.SessionItem {
 	return monitor.SessionItem{
 		ID: id, Source: monitor.SourcePi, Title: title, State: monitor.Waiting,
-		WaitReason: monitor.WaitQuestion, Pane: pane, ActivityAt: time.Now().Add(-2 * time.Minute), IsToday: true,
+		WaitReason: monitor.WaitQuestion, Terminal: terminal, ActivityAt: time.Now().Add(-2 * time.Minute), IsToday: true,
 	}
 }
 
@@ -59,16 +59,15 @@ func (r *jumpRecorder) wait(t *testing.T, pane, app string) {
 	t.Fatalf("the jump did %q, want focus %s and raise %s", got, pane, app)
 }
 
-// fakeHerdrSocket serves the Herdr API from a socket under home, recording the focus calls
-func fakeHerdrSocket(t *testing.T, home string, rec *jumpRecorder) {
+// fakeHerdrAppSocket serves the window's socket under home, recording what it is asked to
+// show
+func fakeHerdrAppSocket(t *testing.T, home string, rec *jumpRecorder) {
 	t.Helper()
-	dir := filepath.Join(home, ".config", "herdr")
-	_ = dir
+	dir := filepath.Join(home, ".config", "herdr-app")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	path := filepath.Join(dir, "herdr.sock")
-	ln, err := net.Listen("unix", path)
+	ln, err := net.Listen("unix", filepath.Join(dir, "herdr-app.sock"))
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -87,23 +86,22 @@ func fakeHerdrSocket(t *testing.T, home string, rec *jumpRecorder) {
 					return
 				}
 				var req struct {
-					Method string         `json:"method"`
-					Params map[string]any `json:"params"`
+					Do   string            `json:"do"`
+					Args map[string]string `json:"args"`
 				}
 				if json.Unmarshal(line, &req) != nil {
 					return
 				}
-				if req.Method == "agent.focus" {
-					target, _ := req.Params["target"].(string)
-					rec.focus(target)
+				if req.Do == "agent.focus" {
+					rec.focus(req.Args["terminal"])
 				}
-				_, _ = conn.Write([]byte(`{"id":"spark","result":{"type":"agent_info","agent":{}}}` + "\n"))
+				_, _ = conn.Write([]byte(`{"ok":true}` + "\n"))
 			}()
 		}
 	}()
 }
 
-// shortHome is a HOME whose socket path still fits unix's ~104 character limit
+// shortHome is a HOME whose socket paths still fit unix's ~104 character limit
 func shortHome(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "spark")
@@ -111,55 +109,55 @@ func shortHome(t *testing.T) string {
 		t.Fatalf("temp dir: %v", err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	if err := os.MkdirAll(filepath.Join(dir, ".config", "herdr"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, ".config", "herdr-app"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	return dir
 }
 
-func TestPiRowInHerdrFocusesThePane(t *testing.T) {
+func TestPiRowInHerdrShowsTheTerminal(t *testing.T) {
 	home := shortHome(t)
 	t.Setenv("HOME", home)
 	rec := &jumpRecorder{}
-	fakeHerdrSocket(t, home, rec)
+	fakeHerdrAppSocket(t, home, rec)
 	restore := activateApp
 	activateApp = rec.raise
 	t.Cleanup(func() { activateApp = restore })
 
 	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "spark-go", Sessions: []monitor.SessionItem{
 		{ID: "abc", Source: monitor.SourcePi, Title: "Add pi sessions", State: monitor.Running,
-			Pane: "w4:pC", ActivityAt: time.Now(), IsToday: true},
+			Terminal: "t4", ActivityAt: time.Now(), IsToday: true},
 	}}}}
 	tt := newViewTester(a, 360, 640)
 
 	if err := tt.Click("Add pi sessions, Running"); err != nil {
 		t.Fatal(err)
 	}
-	rec.wait(t, "w4:pC", "Herdr")
+	rec.wait(t, "t4", "Herdr")
 	if got := tt.OpenedURLs(); len(got) != 0 {
 		t.Errorf("a pi session has no deep link, opened %v", got)
 	}
 }
 
 // The card's button goes the same way as the row
-func TestPiWaitingCardFocusesThePane(t *testing.T) {
+func TestPiWaitingCardShowsTheTerminal(t *testing.T) {
 	home := shortHome(t)
 	t.Setenv("HOME", home)
 	rec := &jumpRecorder{}
-	fakeHerdrSocket(t, home, rec)
+	fakeHerdrAppSocket(t, home, rec)
 	restore := activateApp
 	activateApp = rec.raise
 	t.Cleanup(func() { activateApp = restore })
 
 	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "spark-go", Sessions: []monitor.SessionItem{
-		piWaitingSession("abc", "Add pi sessions", "w4:pC"),
+		piWaitingSession("abc", "Add pi sessions", "t4"),
 	}}}, project: "spark-go"}
 	tt := newViewTester(a, 360, 640)
 
 	if err := tt.Click("Answer in pi"); err != nil {
 		t.Fatal(err)
 	}
-	rec.wait(t, "w4:pC", "Herdr")
+	rec.wait(t, "t4", "Herdr")
 	if got := tt.OpenedURLs(); len(got) != 0 {
 		t.Errorf("a pi session has no deep link, opened %v", got)
 	}
@@ -191,13 +189,22 @@ func TestPiRowSparkCantOpenIsntATarget(t *testing.T) {
 	if tt.HasText("→") {
 		t.Error("no arrow for a row with no destination")
 	}
+	// Nothing on the row itself can hold the reason, so the pointer resting on it says it
+	deadline := time.Now().Add(2 * time.Second)
+	for !tt.HasText("Nothing to open") && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		tt.Frame()
+	}
+	if !tt.HasText("Nothing to open") {
+		t.Errorf("hovering should say why the row does nothing; it shows %q", tt.Texts())
+	}
 }
 
 // A row spark can open still shows the arrow, so the two hover states stay apart
 func TestJumpableRowKeepsTheArrowOnHover(t *testing.T) {
 	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "spark-go", Sessions: []monitor.SessionItem{
 		{ID: "abc", Source: monitor.SourcePi, Title: "Add pi sessions", State: monitor.Running,
-			Pane: "w4:pC", ActivityAt: time.Now(), IsToday: true},
+			Terminal: "t4", ActivityAt: time.Now(), IsToday: true},
 	}}}}
 	tt := newViewTester(a, 360, 640)
 	rect, ok := tt.Find("Add pi sessions, Running")
@@ -213,7 +220,7 @@ func TestJumpableRowKeepsTheArrowOnHover(t *testing.T) {
 
 func TestWaitingCardNamesTheAgent(t *testing.T) {
 	a := &app{groups: []monitor.ProjectGroup{{ProjectName: "spark-go", Sessions: []monitor.SessionItem{
-		piWaitingSession("abc", "Add pi sessions", "w4:pC"),
+		piWaitingSession("abc", "Add pi sessions", "t4"),
 	}}}, project: "spark-go"}
 	tt := newViewTester(a, 360, 640)
 	if !tt.HasText("Answer in pi") {
@@ -271,7 +278,7 @@ func TestJumpable(t *testing.T) {
 	}{
 		{"claude", monitor.SessionItem{Source: monitor.SourceClaude}, true},
 		{"codex", monitor.SessionItem{Source: monitor.SourceCodex}, true},
-		{"pi in herdr", monitor.SessionItem{Source: monitor.SourcePi, Pane: "w1:p1"}, true},
+		{"pi in herdr", monitor.SessionItem{Source: monitor.SourcePi, Terminal: "t1"}, true},
 		{"pi elsewhere", monitor.SessionItem{Source: monitor.SourcePi}, false},
 	}
 	for _, c := range cases {
