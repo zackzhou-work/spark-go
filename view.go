@@ -992,40 +992,48 @@ func restingScale(width float32) float32 {
 }
 
 func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width float32) {
-	ui.Column(c).Width(width).Children(func() {
-		ui.Column(c).Grow(1).Margin(4, 12, 0, 12).Background(p.tileHot).Radius(tileRadius).Padding(24).Gap(24).
-			AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			scale := restingScale(width)
-			ui.Row(c).AlignItems(ui.End).Children(func() {
-				for i, who := range restingCast {
-					cast := avatarOf(c.Key(i), who.who, uint32(i), moodCaughtUp,
-						prop{sep: p.tileHot}, who.size*scale)
-					if i > 0 {
-						// A negative left margin pulls this character over the one before it,
-						// so the five overlap rather than running past the card. They paint in
-						// order, so the right-hand character is the one on top
-						cast.Margin(0, 0, 0, -restingOverlap*scale)
+	_, height := c.Size()
+	showBanner := !a.hookInstalled || !a.codexHookInstalled || !a.piHookInstalled || a.piNeedsReload() || a.cursorNeedsSetup()
+	cardMinHeight := float32(0)
+	if !showBanner && !a.cursorDetected {
+		cardMinHeight = max(0, height-titleBarHeight-18)
+	}
+	scroller(c).Width(width).Children(func() {
+		ui.Column(c).Children(func() {
+			ui.Column(c).MinHeight(cardMinHeight).Shrink(0).Margin(4, 12, 0, 12).Background(p.tileHot).Radius(tileRadius).Padding(24).Gap(24).
+				AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				scale := restingScale(width)
+				ui.Row(c).AlignItems(ui.End).Children(func() {
+					for i, who := range restingCast {
+						cast := avatarOf(c.Key(i), who.who, uint32(i), moodCaughtUp,
+							prop{sep: p.tileHot}, who.size*scale)
+						if i > 0 {
+							// A negative left margin pulls this character over the one before it,
+							// so the five overlap rather than running past the card. They paint in
+							// order, so the right-hand character is the one on top
+							cast.Margin(0, 0, 0, -restingOverlap*scale)
+						}
 					}
+				})
+				ui.Column(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					title, body := "Everyone’s resting.", "Nothing ran today. Sessions you start in your agents show up here."
+					if filter == filterAll {
+						title, body = "No sessions yet.", "Sessions you start in your agents show up here."
+					}
+					ui.Text(c, title).FontSize(28).LineHeight(34.0 / 28).FontWeight(590).LetterSpacing(-0.75).TextAlign(ui.Center).TextColor(p.strong)
+					ui.Text(c, body).FontSize(16).LineHeight(1.5).TextAlign(ui.Center).TextColor(p.sec)
+				})
+				if filter == filterToday {
+					pillButton(c, p, "Show all sessions", true, 40, 14).OnClick(func() { a.filter = filterAll })
 				}
 			})
-			ui.Column(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				title, body := "Everyone’s resting.", "Nothing ran today. Sessions you start in your agents show up here."
-				if filter == filterAll {
-					title, body = "No sessions yet.", "Sessions you start in your agents show up here."
-				}
-				ui.Text(c, title).FontSize(28).LineHeight(34.0 / 28).FontWeight(590).LetterSpacing(-0.75).TextAlign(ui.Center).TextColor(p.strong)
-				ui.Text(c, body).FontSize(16).LineHeight(1.5).TextAlign(ui.Center).TextColor(p.sec)
-			})
-			if filter == filterToday {
-				pillButton(c, p, "Show all sessions", true, 40, 14).OnClick(func() { a.filter = filterAll })
+			a.cursorSetupNotice(c, p)
+			if showBanner {
+				a.hookBanner(c, p, l)
+			} else {
+				ui.Box(c).Height(12)
 			}
 		})
-		a.cursorSetupNotice(c, p)
-		if !a.hookInstalled || !a.codexHookInstalled || !a.piHookInstalled || a.piNeedsReload() || a.cursorNeedsSetup() {
-			a.hookBanner(c, p, l)
-		} else {
-			ui.Box(c).Height(12)
-		}
 	})
 }
 

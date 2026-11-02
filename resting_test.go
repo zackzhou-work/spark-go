@@ -145,3 +145,40 @@ func TestRestingRender(t *testing.T) {
 		}
 	}
 }
+
+func TestRestingShortWindowScrollsToActions(t *testing.T) {
+	for _, banner := range []bool{false, true} {
+		t.Run(strconv.FormatBool(banner), func(t *testing.T) {
+			a := emptyToday()
+			a.piHookInstalled = true
+			if banner {
+				a.hookInstalled = false
+			}
+			tt := newViewTester(a, 287, 300)
+			tt.Scroll(140, 200, 0, 200)
+			r, ok := tt.Find("Show all sessions")
+			if !ok || r.W <= 0 || r.H <= 0 || r.Y < titleBarHeight || r.Y+r.H > 300 {
+				t.Fatalf("after scrolling, the sessions action should be visible: %+v, found=%v", r, ok)
+			}
+			tt.Scroll(140, 200, 0, 2000)
+			label := "Show all sessions"
+			if banner {
+				label = "Install for Claude"
+			}
+			r, ok = tt.Find(label)
+			if !ok || r.W <= 0 || r.H <= 0 || r.Y < titleBarHeight || r.Y+r.H > 300 {
+				t.Fatalf("after scrolling, %q should be visible in the window: %+v, found=%v", label, r, ok)
+			}
+			if err := tt.Click(label); err != nil {
+				t.Fatal(err)
+			}
+			if banner {
+				if len(tt.OpenedURLs()) != 1 {
+					t.Fatal("the install action should be clickable")
+				}
+			} else if a.filter != filterAll {
+				t.Fatal("the all sessions action should be clickable")
+			}
+		})
+	}
+}
