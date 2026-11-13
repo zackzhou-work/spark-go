@@ -270,22 +270,21 @@ func avatarOf(c *ui.Context, ch character, seed uint32, m mood, p prop, size flo
 		shown[i] = box.AnimateWith(i, target, faceShift, ui.EaseInOut)
 	}
 	still := c.Preferences().ReduceMotion
+	darkGround := c.Theme().Dark
 
 	return box.Draw(func(pt *ui.Painter, r ui.Rect) {
 		pose := settle(shown)
+		pose.darkGround = darkGround
 		if !still {
 			idle(&pose, seed, pt.Now())
 			// a pointer passing close turns the face toward it, easing out of the drift
 			x, y, _ := box.PointerPosition()
-			var share float32
-			pose.gaze, share = pose.gaze.toward(x-r.W/2, y-r.H/2, size)
-			if share > 0 {
-				// answering a pointer is fast motion, and a timer lands between refreshes and
-				// waits for the next one: only the display's own frames are even enough
+			share := pose.applyPointer(x-r.W/2, y-r.H/2, size)
+			if share > 0 || pose.fastMotion || pose.blink < 0.99 {
+				// fast saccades, blinks, spins, and pointer tracking need display-synced frames;
+				// ambient dwell can sleep on the drift timer
 				pt.AnimationFrame()
 			} else {
-				// the drift is slow enough that a timer's uneven landing can't be seen, and it
-				// leaves the window most of the time it would otherwise spend repainting
 				pt.After(frameFor(pose.mood))
 			}
 		}
@@ -298,12 +297,23 @@ type pose struct {
 	mood   mood
 	squash float32 // vertical scale of the features, passing through 0 on an expression change
 	blink  float32 // applies to the eyes only
-	gaze   gaze    // where the face is turned, and so where its eyes land
+	gaze   gaze    // where the face (or body, when decoupled) is turned
 	breath float32 // how far the body has breathed out, as a share of its size
 	lift   float32 // how far the body has risen, in design units
 	nudge  float32 // the bubble bobbing up and down
 	bubble float32 // bubble entry progress
 	badge  float32 // badge entry progress
+	// working mood decouples eye gaze and pupil lead from body lag, plus a periodic 360° orbit spin
+	decoupled    bool
+	eyeGaze      gaze
+	pupilX       float32
+	pupilY       float32
+	eyeScaleY    float32
+	fastMotion   bool
+	orbitClip    bool
+	spinProgress float32
+	spinDir      float32
+	darkGround   bool
 }
 
 // gaze is how a character's face is turned, in degrees: yaw looks right, pitch looks down,
@@ -349,32 +359,48 @@ func spin3(v, axis vec3, degrees float32) vec3 {
 // and ry their resting half sizes. The turn moves them along the sphere and narrows the one
 // that has gone round the side
 func (g gaze) eyes(dx, rx, ry float32) [2]eyeOnFace {
+	// the body bends as it turns, so the eyes ride the same bend: without it a turned body
+	// pulls in from under the eye that is going round with it
+	_, turn := g.bodyTurn()
+	eyes, _ := g.projectEyes(turn, dx, rx, ry, false)
+	return eyes
+}
+
+// projectEyes projects a pair of eyes onto the face sphere for the given body turn. When
+// clipBack is true, eyes rotated past the horizon (during 360° orbit) hide cleanly behind
+// the back rather than sliding across it
+func (g gaze) projectEyes(bodyTurnVal, dx, rx, ry float32, clipBack bool) ([2]eyeOnFace, [2]bool) {
 	forward, right, up := vec3{0, 0, 1}, vec3{1, 0, 0}, vec3{0, 1, 0}
 	forward, right = spin3(forward, up, g.yaw), spin3(right, up, g.yaw)
 	up, forward = spin3(up, right, g.pitch), spin3(forward, right, g.pitch)
 
-	// the body bends as it turns, so the eyes ride the same bend: without it a turned body
-	// pulls in from under the eye that is going round with it
-	_, turn := g.bodyTurn()
 	split := float32(math.Asin(float64(dx/faceRadius))) * 180 / math.Pi
 	// an eye is drawn at the size it is given when the face looks straight ahead, so the
 	// rest face is the design's and only a turn narrows it
 	rest := float32(math.Cos(float64(split)*math.Pi/180)) * (0.85 + 0.15*float32(math.Cos(float64(split)*math.Pi/180)))
 	var out [2]eyeOnFace
+	var vis [2]bool
 	for i, side := range [2]float32{-1, 1} {
 		on := spin3(forward, up, side*split)
+		if clipBack && on.z <= 0.04 {
+			continue
+		}
 		across := spin3(right, up, side*split)
 		narrow := float32(math.Hypot(float64(across.x), float64(across.y)))
 		flat := float32(math.Hypot(float64(up.x), float64(up.y)))
 		deep := 0.85 + 0.15*max(0, on.z)
-		width, height := rx*narrow*deep/rest, ry*flat*deep/rest
+		rim := float32(1)
+		if clipBack {
+			rim = min(float32(1), (on.z-0.04)/0.18)
+		}
+		width, height := rx*narrow*deep/rest*rim, ry*flat*deep/rest
 		// the eye is drawn flat on the surface, so near the rim it would poke past the
 		// outline: hold it inside the bent body, which is invisible and keeps it on it
 		x, y := on.x*faceRadius, -on.y*faceRadius+eyeDrop
-		x -= turn * x * x / faceRadius
-		right := faceRadius * (1 - turn)
-		left := -faceRadius * (1 + turn)
-		x = min(max(x, left+width), right-width)
+		x -= bodyTurnVal * x * x / faceRadius
+		rightEdge := faceRadius * (1 - bodyTurnVal)
+		leftEdge := -faceRadius * (1 + bodyTurnVal)
+		x = min(max(x, leftEdge+width), rightEdge-width)
 		y = clampTo(y, faceRadius-height)
 		out[i] = eyeOnFace{
 			x:    x,
@@ -383,34 +409,79 @@ func (g gaze) eyes(dx, rx, ry float32) [2]eyeOnFace {
 			ry:   height,
 			tilt: float32(math.Atan2(float64(-across.y), float64(across.x))) * 180 / math.Pi,
 		}
+		vis[i] = !clipBack || width > 0.35
 	}
-	return out
+	return out, vis
+}
+
+// pointerAim computes the cursor-tracking gaze target and proximity blend share [0, 1]
+func pointerAim(dx, dy, size float32) (gaze, float32) {
+	const reach = 3 // how many body widths away the pointer starts to matter
+	far := size * reach
+	dist := float32(math.Hypot(float64(dx), float64(dy)))
+	share := 1 - dist/far
+	if share <= 0 {
+		return gaze{}, 0
+	}
+	share = share * share * (3 - 2*share) // smoothstep, so it doesn't snap
+	// a dead zone right around the character: a pointer that close means "look at me", and it
+	// keeps a hand resting on the character from flicking its eyes back and forth
+	dx, dy = soft(dx, size*0.4), soft(dy, size*0.4)
+	return gaze{
+		yaw:   clampTo(float32(math.Atan2(float64(dx), float64(size*0.9)))*180/math.Pi, 30),
+		pitch: clampTo(float32(math.Atan2(float64(dy), float64(size*0.9)))*180/math.Pi, 22),
+	}, share
 }
 
 // toward turns the gaze onto a pointer (dx, dy) from the character's centre, taking the drift
 // over entirely by the time the pointer is close: a character that notices you. It returns how
 // much of the drift the pointer took over, 0 when it is out of reach
 func (g gaze) toward(dx, dy, size float32) (gaze, float32) {
-	const reach = 3 // how many body widths away the pointer starts to matter
-	far := size * reach
-	dist := float32(math.Hypot(float64(dx), float64(dy)))
-	share := 1 - dist/far
+	aim, share := pointerAim(dx, dy, size)
 	if share <= 0 {
 		return g, 0
 	}
-	share = share * share * (3 - 2*share) // smoothstep, so it doesn't snap
-	// a dead zone right around the character: a pointer that close means "look at me", and it
-	// keeps a hand resting on the character from flicking its eyes back and forth
-	dx, dy = soft(dx, size*0.4), soft(dy, size*0.4)
-	aim := gaze{
-		yaw:   clampTo(float32(math.Atan2(float64(dx), float64(size*0.9)))*180/math.Pi, 30),
-		pitch: clampTo(float32(math.Atan2(float64(dy), float64(size*0.9)))*180/math.Pi, 22),
-	}
 	return gaze{
-		yaw:   g.yaw + (aim.yaw-g.yaw)*share,
-		pitch: g.pitch + (aim.pitch-g.pitch)*share,
+		yaw:   lerp32(g.yaw, aim.yaw, share),
+		pitch: lerp32(g.pitch, aim.pitch, share),
 		roll:  g.roll,
 	}, share
+}
+
+// applyPointer turns the character (and decoupled pupils/eyes when working) toward a nearby pointer
+func (p *pose) applyPointer(dx, dy, size float32) float32 {
+	if !p.decoupled {
+		var share float32
+		p.gaze, share = p.gaze.toward(dx, dy, size)
+		return share
+	}
+	aimed, share := pointerAim(dx, dy, size)
+	if share <= 0 {
+		return 0
+	}
+	// Normalize yaws into (-180, 180] so hovering mid-orbit turns back via the shortest angle.
+	baseEyeYaw := wrapDeg(p.eyeGaze.yaw)
+	baseBodyYaw := wrapDeg(p.gaze.yaw)
+	p.eyeGaze = gaze{
+		yaw:   lerp32(baseEyeYaw, aimed.yaw, share),
+		pitch: lerp32(p.eyeGaze.pitch, aimed.pitch, share),
+		roll:  lerp32(p.eyeGaze.roll, aimed.roll*0.6, share),
+	}
+	p.gaze = gaze{
+		yaw:   lerp32(baseBodyYaw, aimed.yaw*0.78, share),
+		pitch: lerp32(p.gaze.pitch, aimed.pitch*0.75, share),
+		roll:  lerp32(p.gaze.roll, aimed.roll*0.6, share),
+	}
+	px, py := aimed.pupilLook()
+	p.pupilX = lerp32(p.pupilX, px, share)
+	p.pupilY = lerp32(p.pupilY, py, share)
+	eyeH := p.eyeScaleY
+	if eyeH <= 0 {
+		eyeH = 1
+	}
+	p.eyeScaleY = lerp32(eyeH, 1.06, share)
+	p.spinProgress *= 1 - share
+	return share
 }
 
 // faceOffset is how far a feature on the face has moved from where it rests, in design units:
@@ -493,21 +564,27 @@ func frameFor(m mood) time.Duration {
 	return driftFrame
 }
 
-// idle adds the small time-driven motions: open-eyed expressions blink, the bubble bobs, and
-// drift decides where the character is looking and how it holds itself
+// avatarEpoch anchors working-state schedules so animations stay deterministic across calls and tests
+var avatarEpoch = time.Unix(1700000000, 0)
+
+// idle adds the small time-driven motions: working characters scan calmly with an occasional
+// 360° orbit loop, needs-you bobs and blinks, and drift gently moves resting faces
 func idle(p *pose, seed uint32, now time.Time) {
 	ms := now.UnixMilli() + int64(seed%7919)
 	p.blink = 1
 
-	if p.mood == moodNeedsYou || p.mood == moodWorking {
-		period := int64(3400 + seed%1800)
-		at := time.Duration(ms%period) * time.Millisecond
-		if at < blinkSpan {
-			p.blink = float32(1 - math.Sin(float64(at)/float64(blinkSpan)*math.Pi))
+	if p.mood == moodWorking {
+		applyWorkingOrbit(p, seed, now.Sub(avatarEpoch).Seconds())
+	} else {
+		if p.mood == moodNeedsYou {
+			period := int64(3400 + seed%1800)
+			at := time.Duration(ms%period) * time.Millisecond
+			if at < blinkSpan {
+				p.blink = float32(1 - math.Sin(float64(at)/float64(blinkSpan)*math.Pi))
+			}
 		}
+		p.gaze, p.breath, p.lift = drift(p.mood, seed, float64(ms)/1000)
 	}
-
-	p.gaze, p.breath, p.lift = drift(p.mood, seed, float64(ms)/1000)
 
 	if p.bubble > 0 {
 		t := float64(ms%nudgeEvery.Milliseconds()) / float64(nudgeEvery.Milliseconds())
@@ -515,10 +592,334 @@ func idle(p *pose, seed uint32, now time.Time) {
 	}
 }
 
-// drift is where a character is looking, how far it has breathed out and how far it has risen.
-// Each expression moves on its own tempo and leans on its own axis, so a working character
-// scans, one that needs you bobs at you, and one that is caught up dozes; every period is a
-// different length, so the same small motion never comes round again
+const workingBeatCount = 24
+
+type workingBeat struct {
+	dur, trans       float64
+	yaw, pitch, roll float32
+	eyeScaleY, lift  float32
+}
+
+type curveSample struct {
+	yaw, pitch, roll float32
+	eyeScaleY, lift  float32
+	velYaw           float32
+	inTrans          bool
+}
+
+// applyWorkingOrbit populates p with Variant 4 (Orbit Loop): ~5.2s of calm ambient scanning
+// with eye-lead / body-lag and natural double-blinks, followed by a brisk 0.56s 360° spin
+func applyWorkingOrbit(p *pose, seed uint32, seconds float64) {
+	const scanDur = 5.20
+	const spinDur = 0.56
+	const cycleDur = scanDur + spinDur
+	const anchorYaw = float32(8)
+	const anchorPitch = float32(1)
+
+	t := seconds + float64(seed%53)*0.37
+	cycleIdx := int(math.Floor(t / cycleDur))
+	local := t - float64(cycleIdx)*cycleDur
+
+	beats := buildWorkingBeats(seed ^ uint32(cycleIdx*2654435761))
+	anchorPX, anchorPY := (gaze{yaw: anchorYaw, pitch: anchorPitch}).pupilLook()
+
+	if local < scanDur {
+		sampleDecoupledWorking(p, seed, t, beats[:])
+		if local > scanDur-0.35 {
+			blend := easeOutCubic((local - (scanDur - 0.35)) / 0.35)
+			p.eyeGaze.yaw = lerp32(p.eyeGaze.yaw, anchorYaw, blend)
+			p.eyeGaze.pitch = lerp32(p.eyeGaze.pitch, anchorPitch, blend)
+			p.gaze.yaw = lerp32(p.gaze.yaw, anchorYaw*0.50, blend)
+			p.gaze.pitch = lerp32(p.gaze.pitch, anchorPitch*0.50, blend)
+			p.gaze.roll = lerp32(p.gaze.roll, 0, blend)
+			p.eyeGaze.roll = p.gaze.roll
+			p.pupilX = lerp32(p.pupilX, anchorPX, blend)
+			p.pupilY = lerp32(p.pupilY, anchorPY, blend)
+			p.eyeScaleY = lerp32(p.eyeScaleY, 1, blend)
+			p.fastMotion = true
+		} else if local < 0.35 {
+			blend := easeOutCubic(local / 0.35)
+			p.eyeGaze.yaw = lerp32(anchorYaw, p.eyeGaze.yaw, blend)
+			p.eyeGaze.pitch = lerp32(anchorPitch, p.eyeGaze.pitch, blend)
+			p.gaze.yaw = lerp32(anchorYaw*0.50, p.gaze.yaw, blend)
+			p.gaze.pitch = lerp32(anchorPitch*0.50, p.gaze.pitch, blend)
+			p.pupilX = lerp32(anchorPX, p.pupilX, blend)
+			p.pupilY = lerp32(anchorPY, p.pupilY, blend)
+			p.eyeScaleY = lerp32(1, p.eyeScaleY, blend)
+			p.fastMotion = true
+		}
+		return
+	}
+
+	u := (local - scanDur) / spinDur
+	spinEase := easeInOutQuart(u)
+	dir := float32(1)
+	if (cycleIdx+int(seed))%2 == 1 {
+		dir = -1
+	}
+
+	// Eyes lead slightly into the spin, then re-lock at the anchor when returning to the front.
+	eyeSpin := easeInOutQuart(min(1, u*1.04))
+	hop := float32(math.Sin(math.Pi * u))
+	roll := dir * -6.5 * float32(math.Sin(2*math.Pi*u))
+
+	// Punctuate landing with a crisp blink right as the character faces front again.
+	blink := float32(1)
+	if u > 0.85 {
+		b := (u - 0.85) / 0.15
+		blink = float32(1 - 0.92*math.Sin(b*math.Pi))
+	}
+	spinPX, spinPY := (gaze{yaw: dir * 18 * hop}).pupilLook()
+	px := lerp32(anchorPX, spinPX, min(1, hop*2))
+	py := lerp32(anchorPY, spinPY, min(1, hop*2))
+
+	p.decoupled = true
+	p.eyeGaze = gaze{yaw: anchorYaw + dir*360*eyeSpin, pitch: anchorPitch * (1 - hop), roll: roll}
+	p.gaze = gaze{yaw: anchorYaw*0.50 + dir*360*spinEase, pitch: anchorPitch * 0.50 * (1 - hop), roll: roll}
+	p.pupilX, p.pupilY = px, py
+	p.eyeScaleY = 1 + 0.04*hop
+	p.blink = blink
+	p.breath = -0.024*hop + 0.014*float32(math.Sin(2*math.Pi*u))
+	p.lift = 2.2 * hop
+	p.fastMotion = true
+	p.orbitClip = true
+	p.spinProgress = float32(u)
+	p.spinDir = dir
+}
+
+func sampleDecoupledWorking(p *pose, seed uint32, t float64, beats []workingBeat) {
+	total := beatsDuration(beats)
+	tb := t + float64(seed%97)*0.31
+
+	// Pupils lead first (fastest transition), eyeballs follow 40ms behind, body follows 150ms behind.
+	pupilS := evalBeats(beats, total, tb, 0.72, easeOutQuint)
+	eyeS := evalBeats(beats, total, tb-0.04, 1.0, easeOutQuint)
+	bodyS := evalBeats(beats, total, tb-0.15, 2.1, easeOutCubic)
+
+	micro := float32(math.Sin(2 * math.Pi * wrapCycle(tb, 4.3) / 4.3))
+	p.decoupled = true
+	p.eyeGaze = gaze{
+		yaw:   eyeS.yaw + 0.7*micro,
+		pitch: eyeS.pitch + 0.4*float32(math.Cos(2*math.Pi*wrapCycle(tb, 5.7)/5.7)),
+		roll:  bodyS.roll,
+	}
+	p.gaze = gaze{
+		yaw:   bodyS.yaw * 0.50,
+		pitch: bodyS.pitch * 0.50,
+		roll:  bodyS.roll,
+	}
+	px, py := (gaze{yaw: pupilS.yaw, pitch: pupilS.pitch}).pupilLook()
+	p.pupilX = clampTo(px+clampTo(pupilS.velYaw*0.10, 0.16), 0.45)
+	p.pupilY = clampTo(py, 0.36)
+	p.eyeScaleY = eyeS.eyeScaleY
+	var blinking bool
+	p.blink, blinking = seededBlink(seed, tb)
+	p.breath = float32(0.011 * math.Sin(2*math.Pi*wrapCycle(tb, 3.4)/3.4+float64(seed%13)))
+	p.lift = bodyS.lift
+	p.fastMotion = pupilS.inTrans || eyeS.inTrans || blinking
+}
+
+func buildWorkingBeats(seed uint32) [workingBeatCount]workingBeat {
+	var out [workingBeatCount]workingBeat
+	for i := range workingBeatCount {
+		h := hash32(seed ^ uint32(i*0x9e3779b9+17))
+		r0 := unitRand(h)
+		r1 := unitRand(hash32(h ^ 0x85ebca6b))
+		r2 := unitRand(hash32(h ^ 0xc2b2ae35))
+
+		var yaw, pitch, roll, lift float32
+		scaleY := float32(1)
+		// Calm ambient dwell (1.15s..2.35s) and gentle transitions (0.19s..0.28s) so it never steals focus.
+		dur := 1.15 + float64(r0)*1.10
+		trans := 0.19 + float64(r1)*0.08
+
+		switch i % 5 {
+		case 0: // Settle left & slightly down (checking editor/terminal).
+			yaw = -8 - r1*9
+			pitch = 3 + r2*6
+			roll = 3.0
+		case 1: // Calm center-down intermediate stop (avoids full L->R whip).
+			yaw = (r1 - 0.5) * 10
+			pitch = 4 + r2*5
+			roll = (r1 - 0.5) * -3.0
+			scaleY = 0.97
+			lift = -0.3
+		case 2: // Look right (reading output).
+			yaw = 8 + r1*10
+			pitch = 1 + r2*6
+			roll = -3.0
+		case 3: // Look up-sideways thinking ("hmmm...").
+			side := float32(1)
+			if h&1 == 0 {
+				side = -1
+			}
+			yaw = side * (7 + r1*8)
+			pitch = -8 - r2*4
+			roll = -side * 4.5
+			scaleY = 0.90
+			lift = 0.9
+			dur = 1.45 + float64(r0)*0.90
+			trans = 0.25
+		default: // Gentle mid-range re-focus.
+			yaw = (r1 - 0.5) * 20
+			pitch = -1 + r2*4
+			roll = -yaw * 0.18
+			scaleY = 1.03
+			lift = 0.6
+			dur = 1.05 + float64(r0)*0.70
+			trans = 0.22
+		}
+
+		out[i] = workingBeat{
+			dur:       dur,
+			trans:     trans,
+			yaw:       yaw,
+			pitch:     pitch,
+			roll:      roll,
+			eyeScaleY: scaleY,
+			lift:      lift,
+		}
+	}
+	return out
+}
+
+func beatsDuration(beats []workingBeat) float64 {
+	var total float64
+	for _, b := range beats {
+		total += b.dur
+	}
+	return total
+}
+
+func evalBeats(beats []workingBeat, total, t, transScale float64, easeFn func(float64) float32) curveSample {
+	t = wrapCycle(t, total)
+	acc := 0.0
+	idx := 0
+	for i, b := range beats {
+		if t < acc+b.dur || i == len(beats)-1 {
+			idx = i
+			break
+		}
+		acc += b.dur
+	}
+	prev := beats[(idx-1+len(beats))%len(beats)]
+	cur := beats[idx]
+	elapsed := t - acc
+	tr := min(cur.dur*0.78, cur.trans*transScale)
+	if tr > 0 && elapsed < tr {
+		k := easeFn(elapsed / tr)
+		bell := float32(math.Sin(math.Pi * elapsed / tr))
+		return curveSample{
+			yaw:       lerp32(prev.yaw, cur.yaw, k),
+			pitch:     lerp32(prev.pitch, cur.pitch, k),
+			roll:      lerp32(prev.roll, cur.roll, k),
+			eyeScaleY: lerp32(prev.eyeScaleY, cur.eyeScaleY, k),
+			lift:      lerp32(prev.lift, cur.lift, k),
+			velYaw:    (cur.yaw - prev.yaw) * bell / 20,
+			inTrans:   true,
+		}
+	}
+	return curveSample{
+		yaw:       cur.yaw,
+		pitch:     cur.pitch,
+		roll:      cur.roll,
+		eyeScaleY: cur.eyeScaleY,
+		lift:      cur.lift,
+	}
+}
+
+func seededBlink(seed uint32, t float64) (float32, bool) {
+	// 12 seeded blink events over ~32s with ~25% double-blinks.
+	const slots = 12
+	var durs [slots]float64
+	var total float64
+	for i := range slots {
+		r := float64(unitRand(hash32(seed ^ uint32(i*0x517cc1b7+31))))
+		durs[i] = 1.9 + r*2.3
+		total += durs[i]
+	}
+	local := wrapCycle(t, total)
+	acc := 0.0
+	idx := 0
+	for i := range slots {
+		if local < acc+durs[i] || i == slots-1 {
+			idx = i
+			break
+		}
+		acc += durs[i]
+	}
+	dt := local - acc
+	const span = 0.165
+	if dt < span {
+		return blinkCurve(dt / span), true
+	}
+	double := hash32(seed^uint32(idx*0x94d049bb))%4 == 0
+	if double && dt >= 0.22 && dt < 0.22+0.145 {
+		return blinkCurve((dt - 0.22) / 0.145), true
+	}
+	return 1, false
+}
+
+func blinkCurve(u float64) float32 {
+	if u < 0.42 {
+		return 1 - float32(math.Sin(u/0.42*math.Pi/2))
+	}
+	return easeOutCubic((u - 0.42) / 0.58)
+}
+
+func hash32(x uint32) uint32 {
+	x ^= x >> 16
+	x *= 0x7feb352d
+	x ^= x >> 15
+	x *= 0x846ca68b
+	x ^= x >> 16
+	return x
+}
+
+func unitRand(h uint32) float32 { return float32(float64(h) / float64(1<<32)) }
+
+func wrapCycle(t, total float64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	m := math.Mod(t, total)
+	if m < 0 {
+		m += total
+	}
+	return m
+}
+
+func wrapDeg(a float32) float32 {
+	m := math.Mod(float64(a)+180, 360)
+	if m < 0 {
+		m += 360
+	}
+	return float32(m - 180)
+}
+
+func lerp32(a, b, t float32) float32 { return a + (b-a)*t }
+
+func easeOutCubic(t float64) float32 {
+	u := 1 - max(0, min(1, t))
+	return float32(1 - u*u*u)
+}
+
+func easeOutQuint(t float64) float32 {
+	u := 1 - max(0, min(1, t))
+	return float32(1 - u*u*u*u*u)
+}
+
+func easeInOutQuart(t float64) float32 {
+	t = max(0, min(1, t))
+	if t < 0.5 {
+		return float32(8 * t * t * t * t)
+	}
+	u := -2*t + 2
+	return float32(1 - u*u*u*u/2)
+}
+
+// drift is where non-working characters look, breathe, and rise at idle. Each expression moves
+// on its own tempo and leans on its own axis, using incommensurate periods so motion never loops
 func drift(m mood, seed uint32, seconds float64) (gaze, float32, float32) {
 	phase := float64(seed%360) * math.Pi / 180
 	wobble := func(period, offset float64) float64 {
@@ -528,8 +929,6 @@ func drift(m mood, seed uint32, seconds float64) (gaze, float32, float32) {
 	// how far each expression looks, along which axis, and how fast it does it
 	var yaw, pitch, roll, tempo float64
 	switch m {
-	case moodWorking: // reading down a task: wide, mostly sideways, unhurried
-		yaw, pitch, roll, tempo = 9.0, 2.0, 3.0, 1.0
 	case moodNeedsYou: // trying to catch your eye: quicker, more vertical, with a bob
 		yaw, pitch, roll, tempo = 7.0, 6.0, 3.5, 0.62
 	case moodToRead: // waiting to be read: slow, and it tilts its head
@@ -548,10 +947,6 @@ func drift(m mood, seed uint32, seconds float64) (gaze, float32, float32) {
 		roll:  float32(roll * wobble(8.7*tempo, 0.9)),
 	}
 	var lift float64
-	if m == moodWorking {
-		// the slow sweep is what reads as reading down the task
-		g.yaw += float32(4.5 * wobble(5.7, 2.4))
-	}
 	if m == moodNeedsYou {
 		// a small bob, the way something waves at you
 		lift = 1.1 * math.Sin(2*math.Pi*seconds/2.2+phase)
@@ -693,29 +1088,47 @@ func (s *shape) arcBand(x, base, rx, ry, w float32) {
 	s.path.Close()
 }
 
+// addBody appends a body's outline or rounded rectangle onto s.
+func (s *shape) addBody(b body) {
+	if len(b.outline) > 0 {
+		s.move(b.outline[0].x, b.outline[0].y)
+		for _, q := range b.outline[1:] {
+			s.line(q.x, q.y)
+		}
+		s.path.Close()
+		return
+	}
+	var radii [4][2]float32
+	for i, k := range b.radii {
+		radii[i] = [2]float32{k.rx * 64, k.ry * b.height}
+	}
+	s.roundRect(0, 0, 64, b.height, radii)
+}
+
+func workingBodyTurn(g gaze, orbit bool) (squeeze, turn float32) {
+	if !orbit {
+		return g.bodyTurn()
+	}
+	rad := float64(g.yaw) * math.Pi / 180
+	return 0.78 + 0.22*float32(math.Abs(math.Cos(rad))), 0.22 * float32(math.Sin(rad))
+}
+
 func paintAvatar(pt *ui.Painter, r ui.Rect, ch character, p pose, pr prop) {
 	u := r.W / 64
 	cx, cy := r.X+r.W/2, r.Y+r.H/2+(p.gaze.lift()-p.lift)*u
 
+	showArcs := p.squash > 0.02 && p.spinProgress > 0.02 && p.spinProgress < 0.98
+	if showArcs {
+		paintOrbitArcs(pt, cx, cy, u, ch.color(), p, false)
+	}
+
 	b := ch.body()
 	body := newShape(cx, cy, u, b.rotate+p.gaze.lean())
-	squeeze, turn := p.gaze.bodyTurn()
+	squeeze, turn := workingBodyTurn(p.gaze, p.orbitClip)
 	// Breathing keeps the body's volume: it widens by what it flattens
 	body.pivot, body.sx, body.sy = 0, (1+p.breath)*squeeze, 1-p.breath
 	body.turn = turn
-	if len(b.outline) > 0 {
-		body.move(b.outline[0].x, b.outline[0].y)
-		for _, q := range b.outline[1:] {
-			body.line(q.x, q.y)
-		}
-		body.path.Close()
-	} else {
-		var radii [4][2]float32
-		for i, k := range b.radii {
-			radii[i] = [2]float32{k.rx * 64, k.ry * b.height}
-		}
-		body.roundRect(0, 0, 64, b.height, radii)
-	}
+	body.addBody(b)
 	// The separator is stroked first so the fill covers its inner half: what is left is a
 	// band of sepRatio/2 around the body, which cuts it out of the character behind it.
 	// Characters paint left to right, so the right-hand one is the one that cuts
@@ -728,6 +1141,9 @@ func paintAvatar(pt *ui.Painter, r ui.Rect, ch character, p pose, pr prop) {
 	face.sx = squeeze
 	paintFace(pt, face, p, faceLine(faceInk(ch.color())))
 
+	if showArcs {
+		paintOrbitArcs(pt, cx, cy, u, ch.color(), p, true)
+	}
 	if p.bubble > 0.01 && pr.glyph != "" {
 		paintBubble(pt, r, u, pr.glyph, p.bubble, p.nudge)
 	}
@@ -764,9 +1180,30 @@ func paintFace(pt *ui.Painter, base *shape, p pose, line ui.Color) {
 		lx, ly := p.gaze.pupilLook()
 		paintEyes(pt, layer(true), eyes, lx, -0.2+ly, 0.5, 0.5)
 	case moodWorking:
-		// The pupil sits forward, against the eye's far edge, as the design has it: a working
-		// character stares at its task rather than at you, and the gaze turns the eyes instead
-		paintEyes(pt, layer(true), p.gaze.eyes(10.5, 7.5, 9), 0.47, 0.17, 0.53, 0.5)
+		eyeG := p.gaze
+		px, py := eyeG.pupilLook()
+		if p.decoupled {
+			eyeG = p.eyeGaze
+			px, py = p.pupilX, p.pupilY
+		}
+		eyesLayer := layer(true)
+		if p.eyeScaleY > 0 {
+			eyesLayer.sy *= p.eyeScaleY
+		}
+		var eyes [2]eyeOnFace
+		var vis [2]bool
+		if p.orbitClip {
+			_, turn := workingBodyTurn(p.gaze, true)
+			eyes, vis = eyeG.projectEyes(turn, 10.5, 7.5, 9, true)
+		} else {
+			eyes = eyeG.eyes(10.5, 7.5, 9)
+			vis = [2]bool{true, true}
+		}
+		for i, e := range eyes {
+			if vis[i] {
+				paintEye(pt, eyesLayer, e, px, py, 0.53, 0.5)
+			}
+		}
 	case moodToRead:
 		// closed eyes still sit on the face, so they travel and tilt with it
 		dx, dy := faceOffset(p.gaze)
@@ -793,20 +1230,205 @@ func paintFace(pt *ui.Painter, base *shape, p pose, line ui.Color) {
 	}
 }
 
+type orbitArcSpec struct {
+	cyOff    float32
+	rx, ry   float32
+	tiltDeg  float32
+	startDeg float32
+	sweepDeg float32
+	maxHalfW float32
+	alpha    float32
+	planar   bool
+}
+
+func paintOrbitArcs(pt *ui.Painter, cx, cy, u float32, bodyCol ui.Color, p pose, front bool) {
+	dir := p.spinDir
+	if dir == 0 {
+		dir = 1
+	}
+	env := float32(math.Pow(math.Sin(math.Pi*float64(p.spinProgress)), 0.65)) * p.squash
+	if env < 0.02 {
+		return
+	}
+	base := bodyCol
+	if p.darkGround && faceInk(bodyCol) > 0.5 {
+		base = eyeWhite
+	}
+	phase := easeInOutQuart(float64(p.spinProgress)) * 450 * dir
+
+	arcs := [3]orbitArcSpec{
+		// Lower orbital ribbon wrapping cleanly below eye level.
+		{
+			cyOff:    19,
+			rx:       42,
+			ry:       7.5,
+			tiltDeg:  -10 * dir,
+			startDeg: phase - 130*dir,
+			sweepDeg: 135 * dir,
+			maxHalfW: 1.85,
+			alpha:    0.76 * env,
+		},
+		// Counter-tilted upper crown halo arc (stays well above eye level).
+		{
+			cyOff:    -24,
+			rx:       39,
+			ry:       6.0,
+			tiltDeg:  12 * dir,
+			startDeg: phase + 55*dir,
+			sweepDeg: 120 * dir,
+			maxHalfW: 1.55,
+			alpha:    0.62 * env,
+		},
+		// Outer silhouette speed arc in the screen plane (back pass only).
+		{
+			cyOff:    0,
+			rx:       40,
+			ry:       40,
+			tiltDeg:  0,
+			startDeg: phase*0.8 + 145*dir,
+			sweepDeg: 80 * dir,
+			maxHalfW: 1.45,
+			alpha:    0.50 * env,
+			planar:   true,
+		},
+	}
+
+	for _, a := range arcs {
+		col := base.Alpha(a.alpha)
+		if a.planar {
+			if !front {
+				paintOrbitRibbon(pt, cx, cy, u, a, col, false, true)
+			}
+			continue
+		}
+		paintOrbitRibbon(pt, cx, cy, u, a, col, front, false)
+	}
+}
+
+type ribbonSample struct {
+	x, y float32
+	nx   float32
+	ny   float32
+	hw   float32
+	sinA float32
+}
+
+func paintOrbitRibbon(pt *ui.Painter, cx, cy, u float32, a orbitArcSpec, col ui.Color, wantFront, ignoreDepth bool) {
+	const steps = 28
+	tiltRad := float64(a.tiltDeg) * math.Pi / 180
+	ct, st := float32(math.Cos(tiltRad)), float32(math.Sin(tiltRad))
+
+	eval := func(t float32) ribbonSample {
+		ang := float64(a.startDeg+a.sweepDeg*t) * math.Pi / 180
+		ca, sa := float32(math.Cos(ang)), float32(math.Sin(ang))
+		lx, ly := a.rx*ca, a.ry*sa
+		sign := float32(1)
+		if a.sweepDeg < 0 {
+			sign = -1
+		}
+		tx, ty := -a.rx*sa*sign, a.ry*ca*sign
+		rxp, ryp := lx*ct-ly*st, lx*st+ly*ct
+		rtx, rty := tx*ct-ty*st, tx*st+ty*ct
+		tl := float32(math.Hypot(float64(rtx), float64(rty)))
+		var nx, ny float32
+		if tl > 0 {
+			nx, ny = -rty/tl, rtx/tl
+		}
+		taper := float32(math.Sin(math.Pi*float64(t))) * (0.4 + 0.6*t)
+		return ribbonSample{
+			x:    cx + rxp*u,
+			y:    cy + (ryp+a.cyOff)*u,
+			nx:   nx,
+			ny:   ny,
+			hw:   a.maxHalfW * taper * u,
+			sinA: sa,
+		}
+	}
+
+	var samples [steps + 1]ribbonSample
+	for i := 0; i <= steps; i++ {
+		samples[i] = eval(float32(i) / steps)
+	}
+
+	emitRun := func(run []ribbonSample) {
+		if len(run) < 2 {
+			return
+		}
+		var path ui.Path
+		for i, s := range run {
+			px, py := s.x+s.nx*s.hw, s.y+s.ny*s.hw
+			if i == 0 {
+				path.MoveTo(px, py)
+			} else {
+				path.LineTo(px, py)
+			}
+		}
+		for i := len(run) - 1; i >= 0; i-- {
+			s := run[i]
+			path.LineTo(s.x-s.nx*s.hw, s.y-s.ny*s.hw)
+		}
+		path.Close()
+		pt.FillPath(&path, col)
+	}
+
+	if ignoreDepth {
+		emitRun(samples[:])
+		return
+	}
+
+	inHalf := func(sinA float32) bool {
+		if wantFront {
+			return sinA >= 0
+		}
+		return sinA <= 0
+	}
+
+	var runBuf [steps + 2]ribbonSample
+	run := runBuf[:0]
+	for i, s := range samples {
+		curIn := inHalf(s.sinA)
+		if i > 0 {
+			prev := samples[i-1]
+			prevIn := inHalf(prev.sinA)
+			if curIn != prevIn && s.sinA != prev.sinA {
+				// Interpolate exact sin(a)==0 crossing so back & front halves meet cleanly outside body.
+				frac := -prev.sinA / (s.sinA - prev.sinA)
+				tCross := (float32(i-1) + frac) / steps
+				cross := eval(tCross)
+				if prevIn {
+					run = append(run, cross)
+					emitRun(run)
+					run = runBuf[:0]
+				} else {
+					run = append(runBuf[:0], cross)
+				}
+			}
+		}
+		if curIn {
+			run = append(run, s)
+		}
+	}
+	emitRun(run)
+}
+
 // paintEyes draws a pair of eye whites with pupils, each one placed, narrowed and tilted by
 // the sphere the face sits on; ox and oy are the pupil's offset as a share of the eye, prx
 // and pry its size as a share of the eye's
 func paintEyes(pt *ui.Painter, s *shape, eyes [2]eyeOnFace, ox, oy, prx, pry float32) {
 	for _, e := range eyes {
-		white := s.tilted(e.x, e.y, e.tilt)
-		white.ellipse(e.x, e.y, e.rx, e.ry)
-		pt.FillPath(&white.path, eyeWhite)
-
-		px, py := e.x+e.rx*ox, e.y+e.ry*oy
-		pupil := s.tilted(px, py, e.tilt)
-		pupil.ellipse(px, py, e.rx*prx, e.ry*pry)
-		pt.FillPath(&pupil.path, eyeInk)
+		paintEye(pt, s, e, ox, oy, prx, pry)
 	}
+}
+
+func paintEye(pt *ui.Painter, s *shape, e eyeOnFace, ox, oy, prx, pry float32) {
+	white := s.tilted(e.x, e.y, e.tilt)
+	white.ellipse(e.x, e.y, e.rx, e.ry)
+	pt.FillPath(&white.path, eyeWhite)
+
+	px, py := e.x+e.rx*ox, e.y+e.ry*oy
+	pupil := s.tilted(px, py, e.tilt)
+	pupil.ellipse(px, py, e.rx*prx, e.ry*pry)
+	pt.FillPath(&pupil.path, eyeInk)
 }
 
 // paintBubble draws the white bubble at the upper right, tapering to a point at its lower

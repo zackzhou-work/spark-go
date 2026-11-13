@@ -355,8 +355,8 @@ func TestAvatarDriftSheet(t *testing.T) {
 				ui.Row(c).Height(rowH).Gap(0).Children(func() {
 					ui.Text(c, row.name).Width(96).FontSize(9).TextColor(ui.Hex("#888888"))
 					for f := range frames {
-						g, breath, lift := drift(row.mood, 3, float64(f)*0.5)
-						p := pose{mood: row.mood, squash: 1, blink: 1, gaze: g, breath: breath, lift: lift}
+						p := pose{mood: row.mood, squash: 1, blink: 1}
+						idle(&p, 3, avatarEpoch.Add(time.Duration(float64(f)*0.5*float64(time.Second))))
 						ui.Row(c.Key(fmt.Sprint(r, "-", f))).Width(colW).Center().Children(func() {
 							ui.Box(c).Size(row.size, row.size).Draw(func(pt *ui.Painter, box ui.Rect) {
 								paintAvatar(pt, box, ch, p, prop{})
@@ -375,4 +375,161 @@ func TestAvatarDriftSheet(t *testing.T) {
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
 	tt.Frame()
 	writePNG(t, path, tt.Image())
+}
+
+func TestWorkingMoodMovesPupilsAcrossScan(t *testing.T) {
+	minX, maxX := float32(10), float32(-10)
+	minY, maxY := float32(10), float32(-10)
+	var sawSpin bool
+	for step := range 240 {
+		sec := float64(step) * 0.12
+		p := pose{mood: moodWorking, squash: 1, blink: 1}
+		idle(&p, 11, avatarEpoch.Add(time.Duration(sec*float64(time.Second))))
+		if !p.decoupled {
+			t.Fatalf("expected moodWorking to use decoupled gaze at %.2fs", sec)
+		}
+		if p.spinProgress > 0.1 && p.spinProgress < 0.9 {
+			sawSpin = true
+		}
+		minX, maxX = min(minX, p.pupilX), max(maxX, p.pupilX)
+		minY, maxY = min(minY, p.pupilY), max(maxY, p.pupilY)
+		if p.pupilX < -0.47 || p.pupilX > 0.47 {
+			t.Fatalf("at %.2fs: pupilX %.3f out of eye bounds", sec, p.pupilX)
+		}
+		if p.pupilY < -0.40 || p.pupilY > 0.40 {
+			t.Fatalf("at %.2fs: pupilY %.3f out of eye bounds", sec, p.pupilY)
+		}
+	}
+	if !sawSpin {
+		t.Fatal("expected working cycle to include a periodic 360° orbit spin")
+	}
+	if maxX-minX < 0.25 || minX >= -0.05 || maxX <= 0.15 {
+		t.Fatalf("working pupils should scan both left and right, got range [%.2f, %.2f]", minX, maxX)
+	}
+	if maxY-minY < 0.08 {
+		t.Fatalf("working pupils should also vary vertically, got range [%.2f, %.2f]", minY, maxY)
+	}
+}
+
+func TestWorkingPointerTurnsPupilsTowardCursor(t *testing.T) {
+	base := pose{mood: moodWorking, squash: 1, blink: 1}
+	idle(&base, 11, avatarEpoch.Add(4100*time.Millisecond))
+
+	left := base
+	shareL := left.applyPointer(-55, 0, 64)
+	if shareL <= 0.5 || left.pupilX >= -0.10 || left.eyeScaleY <= 1.0 {
+		t.Fatalf("left hover should pull pupil left and widen eyes, share=%.2f px=%.2f sy=%.3f", shareL, left.pupilX, left.eyeScaleY)
+	}
+
+	right := base
+	shareR := right.applyPointer(55, 0, 64)
+	if shareR <= 0.5 || right.pupilX <= 0.10 {
+		t.Fatalf("right hover should pull pupil right, share=%.2f px=%.2f", shareR, right.pupilX)
+	}
+}
+
+func TestOrbitEyesHideBehindBack(t *testing.T) {
+	_, visFront := (gaze{yaw: 0}).projectEyes(0, 10.5, 7.5, 9, true)
+	if !visFront[0] || !visFront[1] {
+		t.Fatalf("front gaze should show both eyes, got %v", visFront)
+	}
+	_, visBack := (gaze{yaw: 180}).projectEyes(0, 10.5, 7.5, 9, true)
+	if visBack[0] || visBack[1] {
+		t.Fatalf("back gaze (180°) should hide both eyes, got %v", visBack)
+	}
+}
+
+func TestWorkingOrbitSpinArcs(t *testing.T) {
+	// With seed=200, spin runs cleanly within ~0.56s once per 5.76s cycle.
+	var spinSteps int
+	var spinAt float64
+	for step := range 120 {
+		sec := float64(step) * 0.05
+		p := pose{mood: moodWorking, squash: 1, blink: 1}
+		idle(&p, 200, avatarEpoch.Add(time.Duration(sec*float64(time.Second))))
+		if p.spinProgress > 0.02 && p.spinProgress < 0.98 {
+			if spinSteps == 0 {
+				spinAt = sec
+			}
+			spinSteps++
+		}
+	}
+	if spinSteps == 0 || spinSteps > 12 {
+		t.Fatalf("expected brisk ~0.56s spin (1..12 steps of 50ms), got %d steps", spinSteps)
+	}
+
+	ch := character{hue: colourIndex("blue"), shape: bodyIndex("square")}
+	midSpin := avatarEpoch.Add(time.Duration((spinAt + 0.28) * float64(time.Second)))
+	view := func(c *ui.Context) {
+		ui.Box(c).Fill().Background(ui.Hex("#FFFFFF")).Padding(24).Children(func() {
+			ui.Row(c).Gap(20).Children(func() {
+				for _, sz := range []float32{64, 26} {
+					sz := sz
+					ui.Box(c.Key(fmt.Sprint(sz))).Size(sz, sz).Draw(func(pt *ui.Painter, box ui.Rect) {
+						p := pose{mood: moodWorking, squash: 1, blink: 1}
+						idle(&p, 200, midSpin)
+						paintAvatar(pt, box, ch, p, prop{})
+					})
+				}
+			})
+		})
+	}
+	tt := ui.NewTester(view, 180, 120)
+	tt.SetScale(2)
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	tt.Frame()
+	img := tt.Image()
+	var hasArcPixels bool
+	for y := 48; y < 176 && !hasArcPixels; y++ {
+		for x := 24; x < 47; x++ {
+			if p := img.RGBAAt(x, y); p.R < 250 || p.G < 250 || p.B < 250 {
+				hasArcPixels = true
+				break
+			}
+		}
+		for x := 178; x < 204 && !hasArcPixels; x++ {
+			if p := img.RGBAAt(x, y); p.R < 250 || p.G < 250 || p.B < 250 {
+				hasArcPixels = true
+				break
+			}
+		}
+	}
+	if !hasArcPixels {
+		t.Fatal("expected orbital arc pixels outside the body boundary during spin")
+	}
+
+	if path := os.Getenv("AVATAR_SPIN_PNG"); path != "" {
+		const frames, pad, colW = 11, 20, 82
+		strip := func(c *ui.Context) {
+			ui.Box(c).Fill().Background(ui.Hex("#FFFFFF")).Padding(pad).Children(func() {
+				ui.Column(c).Gap(12).Children(func() {
+					ui.Row(c).Height(18).Children(func() {
+						for f := range frames {
+							ui.Text(c, fmt.Sprintf("u=%.1f", float64(f)*0.1)).Width(colW).FontSize(10).TextColor(ui.Hex("#888888"))
+						}
+					})
+					for _, sz := range []float32{64, 26} {
+						sz := sz
+						ui.Row(c.Key(fmt.Sprint("row-", sz))).Height(sz + 28).AlignItems(ui.Center).Children(func() {
+							for f := range frames {
+								tAt := avatarEpoch.Add(time.Duration((spinAt + float64(f)*0.056) * float64(time.Second)))
+								ui.Box(c.Key(fmt.Sprint(sz, "-", f))).Width(colW).Center().Children(func() {
+									ui.Box(c).Size(sz, sz).Draw(func(pt *ui.Painter, box ui.Rect) {
+										p := pose{mood: moodWorking, squash: 1, blink: 1}
+										idle(&p, 200, tAt)
+										paintAvatar(pt, box, ch, p, prop{})
+									})
+								})
+							}
+						})
+					}
+				})
+			})
+		}
+		st := ui.NewTester(strip, pad*2+frames*colW, pad*2+18+12+92+54)
+		st.SetScale(2)
+		st.SetPreferences(ui.Preferences{ReduceMotion: true})
+		st.Frame()
+		writePNG(t, path, st.Image())
+	}
 }
