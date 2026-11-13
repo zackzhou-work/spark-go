@@ -35,7 +35,8 @@ func CursorInstallPath(home string) string {
 	return filepath.Join(CursorDir(home), "install.json")
 }
 
-type cursorInstallMeta struct {
+// CursorInstallMeta identifies one installed copy of spark's Cursor hooks on disk.
+type CursorInstallMeta struct {
 	Protocol         int    `json:"protocol"`
 	CollectorVersion int    `json:"collector_version"`
 	InstalledAt      string `json:"installed_at"`
@@ -108,21 +109,22 @@ func CursorHooksOnDisk(home string) CursorHookState {
 	if err != nil || info.Mode().Perm()&0o111 == 0 {
 		return CursorHooksOutdated
 	}
-	meta, ok := readCursorInstallMeta(home)
+	meta, ok := ReadCursorInstallMeta(home)
 	if !ok || meta.Protocol != cursorProtocol || meta.CollectorVersion != cursorCollectorVersion {
 		return CursorHooksOutdated
 	}
 	return CursorHooksCurrent
 }
 
-func readCursorInstallMeta(home string) (cursorInstallMeta, bool) {
+// ReadCursorInstallMeta reads the install metadata written when spark's Cursor hooks were installed.
+func ReadCursorInstallMeta(home string) (CursorInstallMeta, bool) {
 	content, err := os.ReadFile(CursorInstallPath(home))
 	if err != nil {
-		return cursorInstallMeta{}, false
+		return CursorInstallMeta{}, false
 	}
-	var meta cursorInstallMeta
+	var meta CursorInstallMeta
 	if json.Unmarshal(content, &meta) != nil {
-		return cursorInstallMeta{}, false
+		return CursorInstallMeta{}, false
 	}
 	return meta, true
 }
@@ -246,10 +248,10 @@ func writeCursorInstallMeta(home string) error {
 	if err := os.MkdirAll(CursorDir(home), 0o700); err != nil {
 		return err
 	}
-	body, err := json.Marshal(cursorInstallMeta{
+	body, err := json.Marshal(CursorInstallMeta{
 		Protocol:         cursorProtocol,
 		CollectorVersion: cursorCollectorVersion,
-		InstalledAt:      time.Now().UTC().Format(time.RFC3339),
+		InstalledAt:      time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
 		return err

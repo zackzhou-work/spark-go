@@ -326,3 +326,104 @@ func TestRealHomeRenders(t *testing.T) {
 	}
 	t.Logf("rendered %d projects, %d Cursor sessions, %d sessions in all", len(a.groups), cursor, monitor.CountSessions(a.groups))
 }
+
+func TestCursorDismissPersistsAcrossRestartsAndResetsOnReinstall(t *testing.T) {
+	home := tempHome(t)
+	exe := filepath.Join(home, "spark")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitor.InstallCursorHooks(home, exe); err != nil {
+		t.Fatal(err)
+	}
+
+	noticeFile := noticesPath(home)
+	makeApp := func() *app {
+		a := &app{
+			groups: []monitor.ProjectGroup{{ProjectName: "project", Sessions: []monitor.SessionItem{
+				cursorSession("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", "Trace the ingest bug", monitor.Unknown, false),
+			}}},
+			notices:   loadNoticeSettings(noticeFile),
+			noticesAt: noticeFile,
+		}
+		side := readSideState(home)
+		side.cursorDetected = true
+		a.applySideState(side)
+		return a
+	}
+
+	a1 := makeApp()
+	tt1 := newViewTester(a1, 360, 640)
+	if !tt1.HasText("Cursor is set up. Start a new turn to verify reporting.") {
+		t.Fatalf("expected setup notice before dismiss; got %q", tt1.Texts())
+	}
+	if err := tt1.Click("Dismiss"); err != nil {
+		t.Fatal(err)
+	}
+	tt1.Frame()
+	if tt1.HasText("Cursor is set up. Start a new turn to verify reporting.") {
+		t.Fatalf("notice should hide after dismiss; got %q", tt1.Texts())
+	}
+
+	// Restarting spark reads notices.json and keeps the notice dismissed.
+	a2 := makeApp()
+	tt2 := newViewTester(a2, 360, 640)
+	if tt2.HasText("Cursor is set up. Start a new turn to verify reporting.") {
+		t.Fatalf("dismissed notice should stay hidden across restarts; got %q", tt2.Texts())
+	}
+	// Empty Today view also keeps it hidden.
+	a2.groups = nil
+	tt2.Frame()
+	if tt2.HasText("Cursor is set up. Start a new turn to verify reporting.") {
+		t.Fatalf("dismissed notice should stay hidden on empty state; got %q", tt2.Texts())
+	}
+
+	// Reinstalling writes a new install.json, so the fresh install asks to verify again.
+	if err := monitor.InstallCursorHooks(home, exe); err != nil {
+		t.Fatal(err)
+	}
+	a3 := makeApp()
+	tt3 := newViewTester(a3, 360, 640)
+	if !tt3.HasText("Cursor is set up. Start a new turn to verify reporting.") {
+		t.Fatalf("reinstalling Cursor hooks should bring the notice back; got %q", tt3.Texts())
+	}
+}
+
+func TestCursorVerifiedPersistsAfterEventRetentionExpires(t *testing.T) {
+	home := tempHome(t)
+	exe := filepath.Join(home, "spark")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitor.InstallCursorHooks(home, exe); err != nil {
+		t.Fatal(err)
+	}
+
+	noticeFile := noticesPath(home)
+	a1 := &app{
+		notices:   loadNoticeSettings(noticeFile),
+		noticesAt: noticeFile,
+	}
+	side := readSideState(home)
+	side.cursorDetected = true
+	side.cursorReported = true
+	a1.applySideState(side)
+
+	// Simulate restarting after 7-day event files expired (cursorReported == false).
+	a2 := &app{
+		groups: []monitor.ProjectGroup{{ProjectName: "project", Sessions: []monitor.SessionItem{
+			cursorSession("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", "Trace the ingest bug", monitor.Unknown, false),
+		}}},
+		notices:   loadNoticeSettings(noticeFile),
+		noticesAt: noticeFile,
+	}
+	expiredSide := readSideState(home)
+	expiredSide.cursorDetected = true
+	expiredSide.cursorReported = false
+	a2.applySideState(expiredSide)
+
+	tt := newViewTester(a2, 360, 640)
+	if tt.HasText("Cursor is set up. Start a new turn to verify reporting.") {
+		t.Fatalf("verified install should stay quiet even when old events expire; got %q", tt.Texts())
+	}
+}

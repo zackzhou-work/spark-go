@@ -146,11 +146,13 @@ type app struct {
 	// view several times for one event, and a view build must not do filesystem I/O
 	piState       monitor.PiExtensionState
 	piInstalledAt time.Time
+	piInstallID   string
 	piReported    bool
 	// cursorState is spark's hooks file for Cursor on disk, cursorDetected says Cursor is
 	// installed at all, and cursorReported whether the helper has written an event. cursorError
 	// keeps a failed install visible without pretending it worked
 	cursorState           monitor.CursorHookState
+	cursorMeta            monitor.CursorInstallMeta
 	cursorDetected        bool
 	cursorReported        bool
 	cursorError           string
@@ -158,6 +160,11 @@ type app struct {
 	// piNoticeDismissed is the install the setup notice was dismissed for, so a later install
 	// brings it back
 	piNoticeDismissed time.Time
+	// notices persists setup notice dismissals and verified-reporting receipts per install so
+	// restarts and event-log pruning do not re-prompt for an already settled setup
+	notices    noticeSettings
+	noticesAt  string
+	noticeSave noticeWriter
 	// cast is the character each project was given, handed out across all projects at once so
 	// that projects on screen clash as little as possible
 	cast map[string]character
@@ -994,8 +1001,9 @@ func restingScale(width float32) float32 {
 func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width float32) {
 	_, height := c.Size()
 	showBanner := !a.hookInstalled || !a.codexHookInstalled || !a.piHookInstalled || a.piNeedsReload() || a.cursorNeedsSetup()
+	cursorBody, _ := a.cursorSetupContent()
 	cardMinHeight := float32(0)
-	if !showBanner && !a.cursorDetected {
+	if !showBanner && cursorBody == "" {
 		cardMinHeight = max(0, height-titleBarHeight-18)
 	}
 	scroller(c).Width(width).Children(func() {
@@ -1038,11 +1046,11 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 }
 
 // piNeedsReload reports whether spark still has to say that pi sessions already running
-// haven't loaded the extension: the file is in place, but no receipt has been written since
-// it landed. pi loads extensions when it starts, so writing the file changes nothing for a
-// session that is already up
+// haven't loaded the extension: the file is in place, and this install hasn't been verified
+// or dismissed yet. pi loads extensions when it starts, so writing the file changes nothing for
+// a session that is already up
 func (a *app) piNeedsReload() bool {
-	return a.piInstallWaiting()
+	return a.piInstallWaiting() && !a.piNoticeQuiet()
 }
 
 // applySideState records what the scan read about the hooks and pi's setup, so a view build
@@ -1057,20 +1065,35 @@ func (a *app) applySideState(side sideState) {
 // at all, and whether its helper has reported anything yet. "Installed" only ever means the file
 // and the helper, never that Cursor is reporting
 func (a *app) applyCursorSetup(side sideState) {
-	if side.cursorState != a.cursorState {
-		// A change of state is a fresh subject for the notice, and an old failure has been dealt
-		// with one way or another
+	if side.cursorState != a.cursorState || side.cursorMeta != a.cursorMeta {
+		// A change of state or install is a fresh subject for the notice, and an old failure has
+		// been dealt with one way or another
 		a.cursorNoticeDismissed = false
 		a.cursorError = ""
 	}
 	a.cursorState, a.cursorDetected = side.cursorState, side.cursorDetected
-	a.cursorReported = side.cursorReported
+	a.cursorMeta, a.cursorReported = side.cursorMeta, side.cursorReported
+	if a.cursorState == monitor.CursorHooksCurrent && a.cursorReported {
+		if next, changed := a.notices.withCursorFlag(a.cursorMeta, false, true); changed {
+			a.notices = next
+			a.saveNotices()
+		}
+	}
 }
 
 // applyPiSetup is the pi half, which is what installing or updating touches
 func (a *app) applyPiSetup(side sideState) {
+	if !side.piInstalledAt.Equal(a.piInstalledAt) || side.piInstallID != a.piInstallID {
+		a.piNoticeDismissed = time.Time{}
+	}
 	a.piHookInstalled, a.piState, a.piReported = side.piInstalled, side.piState, side.piReported
-	a.piInstalledAt = side.piInstalledAt
+	a.piInstalledAt, a.piInstallID = side.piInstalledAt, side.piInstallID
+	if a.piState == monitor.PiExtensionCurrent && a.piReported {
+		if next, changed := a.notices.withPiFlag(a.piInstalledAt, a.piInstallID, false, true); changed {
+			a.notices = next
+			a.saveNotices()
+		}
+	}
 }
 
 // piInstallWaiting reports whether the current extension is in place but no pi session has
@@ -1139,44 +1162,74 @@ func (a *app) sideStateNow() sideState {
 	return readSideStateFor(a.scanner, home)
 }
 
+func (a *app) saveNotices() {
+	a.noticeSave.save(a.noticesAt, a.notices, a.win != nil)
+}
+
+func (a *app) cursorNoticeQuiet() bool {
+	return a.cursorReported || a.cursorNoticeDismissed || a.notices.cursorQuiet(a.cursorMeta)
+}
+
+func (a *app) piNoticeQuiet() bool {
+	if a.piReported {
+		return true
+	}
+	if !a.piInstalledAt.IsZero() && a.piNoticeDismissed.Equal(a.piInstalledAt) {
+		return true
+	}
+	return a.notices.piQuiet(a.piInstalledAt, a.piInstallID)
+}
+
+func (a *app) dismissCursorNotice() {
+	a.cursorNoticeDismissed = true
+	if next, changed := a.notices.withCursorFlag(a.cursorMeta, true, false); changed {
+		a.notices = next
+		a.saveNotices()
+	}
+}
+
+func (a *app) dismissPiNotice() {
+	a.piNoticeDismissed = a.piInstalledAt
+	if next, changed := a.notices.withPiFlag(a.piInstalledAt, a.piInstallID, true, false); changed {
+		a.notices = next
+		a.saveNotices()
+	}
+}
+
+func (a *app) cursorSetupContent() (body, label string) {
+	if !a.cursorDetected {
+		return "", ""
+	}
+	switch {
+	case a.cursorError != "":
+		return a.cursorError, ""
+	case a.cursorState == monitor.CursorHooksBroken:
+		return "Cursor’s hooks file can’t be read, so spark left it alone.", ""
+	case a.cursorState == monitor.CursorHooksMissing:
+		return "Spark can show Cursor’s desktop agents once its hooks are installed.", "Install for Cursor"
+	case a.cursorState == monitor.CursorHooksOutdated:
+		return "The Spark hooks for Cursor are out of date.", "Update"
+	case a.cursorState == monitor.CursorHooksCurrent && !a.cursorNoticeQuiet():
+		return "Cursor is set up. Start a new turn to verify reporting.", "Dismiss"
+	default:
+		return "", ""
+	}
+}
+
 // cursorSetupNotice is the line under a page's heading for Cursor: the install spark can do
 // itself, and the honest statement that nothing has been heard from it yet. The banner only
 // shows on an empty list, so a user with sessions in front of them needs this
 func (a *app) cursorSetupNotice(c *ui.Context, p palette) {
-	if !a.cursorDetected {
+	body, label := a.cursorSetupContent()
+	if body == "" {
 		return
 	}
-	body, label := "", ""
-	switch {
-	case a.cursorError != "":
-		body = a.cursorError
-	case a.cursorState == monitor.CursorHooksBroken:
-		body = "Cursor’s hooks file can’t be read, so spark left it alone."
-	case a.cursorState == monitor.CursorHooksMissing:
-		body, label = "Spark can show Cursor’s desktop agents once its hooks are installed.", "Install for Cursor"
-	case a.cursorState == monitor.CursorHooksOutdated:
-		body, label = "The Spark hooks for Cursor are out of date.", "Update"
-	case a.cursorState == monitor.CursorHooksCurrent && !a.cursorReported:
-		if a.cursorNoticeDismissed {
+	setupNoticeRow(c, p, body, label, func() {
+		if label == "Dismiss" {
+			a.dismissCursorNotice()
 			return
 		}
-		body, label = "Cursor is set up. Start a new turn to verify reporting.", "Dismiss"
-	default:
-		return
-	}
-
-	ui.Row(c).Background(p.tile).Radius(14).Padding(10, 12).Gap(10).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, body).FontSize(12).LineHeight(1.5).TextColor(p.sec).Grow(1).MinWidth(0)
-		if label == "" {
-			return
-		}
-		pillButton(c, p, label, false, 24, 11).OnClick(func() {
-			if label == "Dismiss" {
-				a.cursorNoticeDismissed = true
-				return
-			}
-			a.installCursor()
-		})
+		a.installCursor()
 	})
 }
 
@@ -1191,7 +1244,7 @@ func (a *app) piSetupNotice(c *ui.Context, p palette) {
 		// Reloading would load that same file, so the only way out is writing the new one
 		body, label = "The Spark extension for pi is out of date. Update it so pi reports what it is doing.", "Update"
 	case monitor.PiExtensionCurrent:
-		if a.piReported || a.piNoticeDismissed.Equal(a.piInstalledAt) {
+		if a.piNoticeQuiet() {
 			return
 		}
 		body, label = "pi is set up, but sessions that are already running need /reload or a restart before they report.", "Dismiss"
@@ -1199,25 +1252,32 @@ func (a *app) piSetupNotice(c *ui.Context, p palette) {
 		return
 	}
 
+	setupNoticeRow(c, p, body, label, func() {
+		if label == "Dismiss" {
+			a.dismissPiNotice()
+			return
+		}
+		home, err := userHome()
+		if err != nil {
+			return
+		}
+		if err := monitor.InstallPiExtension(home); err != nil {
+			log.Printf("[Hooks] updating the pi extension failed: %v", err)
+			return
+		}
+		// The file is the one this build ships now; the reload it asks for next is what
+		// proves a session loaded it
+		a.applyPiSetup(readSideState(home))
+	})
+}
+
+func setupNoticeRow(c *ui.Context, p palette, body, label string, onClick func()) {
 	ui.Row(c).Background(p.tile).Radius(14).Padding(10, 12).Gap(10).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, body).FontSize(12).LineHeight(1.5).TextColor(p.sec).Grow(1).MinWidth(0)
-		pillButton(c, p, label, false, 24, 11).OnClick(func() {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return
-			}
-			if label == "Update" {
-				if err := monitor.InstallPiExtension(home); err != nil {
-					log.Printf("[Hooks] updating the pi extension failed: %v", err)
-					return
-				}
-				// The file is the one this build ships now; the reload it asks for next is what
-				// proves a session loaded it
-				a.applyPiSetup(readSideState(home))
-				return
-			}
-			a.piNoticeDismissed = a.piInstalledAt
-		})
+		if label == "" {
+			return
+		}
+		pillButton(c, p, label, false, 24, 11).OnClick(onClick)
 	})
 }
 

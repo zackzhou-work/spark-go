@@ -21,6 +21,7 @@ type sideState struct {
 	codexHooked   bool
 	piState       monitor.PiExtensionState
 	piInstalledAt time.Time
+	piInstallID   string
 	piReported    bool
 	piInstalled   bool
 
@@ -28,6 +29,7 @@ type sideState struct {
 	// subject out of the window for people who don't run Cursor, and cursorReported says whether
 	// the installed helper has actually written an event
 	cursorState    monitor.CursorHookState
+	cursorMeta     monitor.CursorInstallMeta
 	cursorDetected bool
 	cursorReported bool
 }
@@ -40,9 +42,13 @@ func readSideState(home string) sideState {
 		piReported:  monitor.PiReported(home),
 	}
 	side.piInstalledAt = monitor.PiInstalledAt(home)
+	side.piInstallID = monitor.PiInstalledID(home)
 	side.piInstalled = side.piState == monitor.PiExtensionCurrent
 	side.cursorState = monitor.CursorHooksOnDisk(home)
 	side.cursorDetected = monitor.CursorPresent(home)
+	if meta, ok := monitor.ReadCursorInstallMeta(home); ok {
+		side.cursorMeta = meta
+	}
 	return side
 }
 
@@ -82,6 +88,8 @@ func main() {
 	if charactersErr != nil {
 		log.Printf("[Characters] reading %s failed, saving stays off: %v", charactersAt, charactersErr)
 	}
+	noticesAt := noticesPath(home)
+	notices := loadNoticeSettings(noticesAt)
 	a := &app{
 		scanner:       scanner,
 		pinned:        true,
@@ -89,6 +97,8 @@ func main() {
 		characters:    characters,
 		charactersErr: charactersErr,
 		charactersAt:  charactersAt,
+		notices:       notices,
+		noticesAt:     noticesAt,
 	}
 	// The state the window starts with is also the watcher's baseline, so the two cannot
 	// disagree about what has already been published
@@ -152,6 +162,8 @@ func main() {
 		})
 	})
 	if err := mygo.App.Run(); err != nil {
+		a.noticeSave.wait()
 		log.Fatal(err)
 	}
+	a.noticeSave.wait()
 }

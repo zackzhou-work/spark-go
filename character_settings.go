@@ -99,7 +99,13 @@ func saveCharacterSettings(path string, settings characterSettings) error {
 	if settings.Projects == nil {
 		settings.Projects = map[string]characterChoice{}
 	}
-	data, err := json.MarshalIndent(settings, "", "  ")
+	return saveJSONAtomic(path, ".characters-*.json", settings)
+}
+
+// saveJSONAtomic marshals value with indentation and replaces path via a sibling temp file,
+// so a crash leaves either the old file or the new one, never half of either.
+func saveJSONAtomic(path, tempPattern string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -109,7 +115,7 @@ func saveCharacterSettings(path string, settings characterSettings) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(dir, ".characters-*.json")
+	temp, err := os.CreateTemp(dir, tempPattern)
 	if err != nil {
 		return err
 	}

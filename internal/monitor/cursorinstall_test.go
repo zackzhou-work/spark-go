@@ -103,7 +103,7 @@ func TestInstallCursorHooksFromScratch(t *testing.T) {
 	if meta, err := os.ReadFile(CursorInstallPath(home)); err != nil {
 		t.Fatal(err)
 	} else {
-		var m cursorInstallMeta
+		var m CursorInstallMeta
 		if err := json.Unmarshal(meta, &m); err != nil {
 			t.Fatal(err)
 		}

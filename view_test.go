@@ -272,6 +272,109 @@ func TestTodayNoticePointsAtThePiReload(t *testing.T) {
 	}
 }
 
+func TestPiDismissPersistsAcrossRestartsAndEmptyBanner(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := monitor.InstallPiExtension(home); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	installedAt := monitor.PiInstalledAt(home)
+	noticeFile := noticesPath(home)
+
+	makeApp := func(withSessions bool) *app {
+		a := demoApp()
+		if !withSessions {
+			a.groups = nil
+		}
+		a.hookInstalled, a.codexHookInstalled = true, true
+		a.notices = loadNoticeSettings(noticeFile)
+		a.noticesAt = noticeFile
+		a.applyPiSetup(readSideState(home))
+		return a
+	}
+
+	a1 := makeApp(true)
+	tt1 := newViewTester(a1, 360, 640)
+	if !tt1.HasText("need /reload or a restart") {
+		t.Fatalf("expected pi setup notice; got %q", tt1.Texts())
+	}
+	if err := tt1.Click("Dismiss"); err != nil {
+		t.Fatal(err)
+	}
+	tt1.Frame()
+	if tt1.HasText("need /reload or a restart") {
+		t.Fatalf("dismissed pi notice should hide; got %q", tt1.Texts())
+	}
+
+	// Empty state should also respect the dismissal instead of showing "One more step for pi".
+	a1.groups = nil
+	tt1.Frame()
+	if tt1.HasText("One more step for pi") {
+		t.Fatalf("empty state banner should stay hidden after dismiss; got %q", tt1.Texts())
+	}
+
+	// Restarting spark keeps both the top notice and empty-state banner hidden.
+	a2 := makeApp(true)
+	tt2 := newViewTester(a2, 360, 640)
+	if tt2.HasText("need /reload or a restart") {
+		t.Fatalf("dismissed pi notice should stay hidden across restarts; got %q", tt2.Texts())
+	}
+	a3 := makeApp(false)
+	tt3 := newViewTester(a3, 360, 640)
+	if tt3.HasText("One more step for pi") {
+		t.Fatalf("empty state banner should stay hidden across restarts; got %q", tt3.Texts())
+	}
+
+	// Reinstalling the extension brings the notice back.
+	if err := monitor.InstallPiExtension(home); err != nil {
+		t.Fatalf("reinstall: %v", err)
+	}
+	if err := os.Chtimes(monitor.PiExtensionPath(home), installedAt.Add(time.Hour), installedAt.Add(time.Hour)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	a4 := makeApp(true)
+	tt4 := newViewTester(a4, 360, 640)
+	if !tt4.HasText("need /reload or a restart") {
+		t.Fatalf("reinstalling pi extension should bring notice back; got %q", tt4.Texts())
+	}
+}
+
+func TestPiVerifiedPersistsAfterReceiptsArePruned(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := monitor.InstallPiExtension(home); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	receipt := writeReceiptForTest(t, home, "fresh.json", monitor.PiInstalledID(home))
+	noticeFile := noticesPath(home)
+
+	a1 := &app{
+		notices:   loadNoticeSettings(noticeFile),
+		noticesAt: noticeFile,
+	}
+	a1.applyPiSetup(readSideState(home))
+
+	// Remove the receipt as 30-day pruning does, then restart spark.
+	if err := os.Remove(receipt); err != nil {
+		t.Fatal(err)
+	}
+	a2 := demoApp()
+	a2.hookInstalled, a2.codexHookInstalled = true, true
+	a2.notices = loadNoticeSettings(noticeFile)
+	a2.noticesAt = noticeFile
+	a2.applyPiSetup(readSideState(home))
+
+	tt2 := newViewTester(a2, 360, 640)
+	if tt2.HasText("need /reload or a restart") {
+		t.Fatalf("verified pi install should stay quiet after receipt pruning; got %q", tt2.Texts())
+	}
+	a2.groups = nil
+	tt2.Frame()
+	if tt2.HasText("One more step for pi") {
+		t.Fatalf("empty state should stay quiet after receipt pruning; got %q", tt2.Texts())
+	}
+}
+
 // Each hook installs separately: with Claude's installed and Codex's missing, Codex's is
 // still offered
 func TestHookBannerCoversCodexSeparately(t *testing.T) {
