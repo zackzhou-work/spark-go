@@ -1,6 +1,6 @@
 # spark
 
-A small macOS window that shows the live status of every session in the Code tab of Claude Desktop, every Codex thread, every pi session, and every local Cursor agent. Built with Go and the native UI of [mygo](https://github.com/egoist/mygo).
+A small macOS window that shows the live status of every session in the Code tab of Claude Desktop, every Codex thread, every pi session, every local Cursor agent, and every Antigravity 2.0 desktop conversation. Built with Go and the native UI of [mygo](https://github.com/egoist/mygo).
 
 ![spark: every Claude Desktop session, at a glance](docs/banner.png)
 
@@ -16,7 +16,7 @@ xattr -dr com.apple.quarantine /Applications/Spark.app
 
 ## Where the status comes from
 
-spark watches four agents: Claude Desktop's Code tab, Codex, pi, and Cursor's desktop agents.
+spark watches five agents: Claude Desktop's Code tab, Codex, pi, Cursor's desktop agents, and Antigravity 2.0.
 
 ### Claude
 
@@ -50,6 +50,13 @@ spark watches four agents: Claude Desktop's Code tab, Codex, pi, and Cursor's de
 - **Unknown**: with no hook event for a conversation there is nothing to decide from — an old session spark never watched, or one whose last turn predates the install, shows `Status unavailable` instead of a made-up state. Clicking a row never changes that, since Cursor gives no receipt for "this conversation got selected".
 - **Boundaries**: only the stable macOS app and its default profile are read; Cursor CLI, Cloud Agent, remote machines, Insiders and other profiles are out of scope. Conversations that only exist in the classic IDE layout (`workspaceStorage/*/state.vscdb` → `composer.composerData`) are not listed: none of them matched a `composerHeaders` row on the verified build, and none was proven to be reachable by the Agent link.
 - `sessionStart` also fires when a conversation is simply reopened, so it is never treated as a turn or as activity. spark reads the database again on every scan (a few milliseconds for a few dozen rows) rather than caching it, and keeps the last good read for 30 seconds if Cursor is holding the database.
+
+### Antigravity
+
+- **Desktop summaries**: Antigravity 2.0 keeps conversation summaries in `~/.gemini/antigravity/conversation_summaries.db` (table `conversation_summaries`, including the serialized `raw_summary` protobuf blob), with `~/.gemini/antigravity/agyhub_summaries_proto.pb` as fallback when the database is absent. spark opens the SQLite store **read-only** (`mode=ro`, one connection, 250 ms deadline), excludes IDE/CLI stores (`app_data_dir`), archives, hidden/cloud entries, subagents, battle forks, side/commit helper trajectories and empty drafts, and installs no hooks.
+- **State and waits**: Active sessions (`RUNNING`, `BUSY`, `CANCELING`, running subagents/children, `not_fully_idle`) and `waiting_steps` are gated by a live Antigravity process or recent modification window so crashed sessions fall back cleanly. Question prompts (`ask_question`, `exit_plan_mode`, `requested_interaction` elicitation/question, and plan/artifact `RequestFeedback`) map to **Question**, while command/browser/interaction approvals map to **Permission prompt**. Active or waiting candidates also check the tail of `~/.gemini/antigravity/brain/<conversationId>/.system_generated/logs/transcript.jsonl` to catch prompt/feedback waits before `waiting_steps` catches up.
+- **Read state**: Matches Antigravity's unread rule: `annotations.marked_as_unread` or `last_modified_time` newer than `annotations.last_user_view_time` marks a session **Unread**; otherwise **Completed**.
+- **Projects and watching**: Conversations group by the basename of their first decoded workspace URI (or under **Antigravity** when no workspace is attached). spark watches `~/.gemini/antigravity` non-recursively so large media directories underneath it don't exhaust file descriptors.
 
 Each project gets a character — eight body shapes by eleven colours, eighty-eight in all — picked by hashing its name, and the character's face shows the most urgent state among the project's sessions: needs you › working › to read › all caught up. Two projects that hash to the same character are pulled apart so a screenful doesn't repeat: the later one keeps its shape and takes a colour nobody is using. A colour dark enough to swallow the face's lines, such as black, takes white ones: the mouth, the brows and the closed eyes swap, while the eye whites and the pupils inside them keep their own colours. Rows keep an ink-only marker that matches the dot in the desktop app's sidebar:
 
@@ -103,6 +110,8 @@ cursor://anysphere.cursor-deeplink/agent?id=<composerId>
 - **There is no receipt.** Cursor doesn't record which conversation its Agents window selected, so a click sends one URL and nothing else: it doesn't mark the session read, doesn't write to Cursor's database, and doesn't fall back to opening the project, a new chat or a CLI resume when the link can't do its job.
 
 **pi** has no deep link, so spark asks the Herdr window to show the terminal its session runs in (`{"do":"agent.focus"}` on `~/.config/herdr-app/herdr-app.sock`) and then raises Herdr itself. A pi session running anywhere else — an IDE, a plain terminal, `tmux` — has nothing to show: the row keeps its time on hover instead of showing the arrow and explains itself in a tooltip, and a waiting session gets a card with only **Later**.
+
+**Antigravity** desktop 2.0 has no per-conversation external URL scheme (`/c/<id>` is internal only, and `antigravity://open` resets to Home), so clicking an Antigravity row or waiting card opens `antigravity://focus` to raise and focus the Antigravity desktop window without disturbing the open conversation.
 
 ### Caveats
 

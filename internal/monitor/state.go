@@ -79,6 +79,8 @@ const (
 	SourcePi
 	// SourceCursor is a Cursor desktop local agent, read from its metadata and hooks
 	SourceCursor
+	// SourceAntigravity is Google Antigravity 2.0 desktop app, read from its summary store and transcripts
+	SourceAntigravity
 )
 
 func (s SessionSource) String() string {
@@ -89,6 +91,8 @@ func (s SessionSource) String() string {
 		return "pi"
 	case SourceCursor:
 		return "Cursor"
+	case SourceAntigravity:
+		return "Antigravity"
 	}
 	return "Claude"
 }
@@ -167,6 +171,9 @@ func (s SessionItem) Jumpable() bool {
 		return s.Terminal != ""
 	case SourceCursor:
 		return s.CanJumpCursor
+	case SourceAntigravity:
+		_, ok := AntigravityDeeplink(s.ID)
+		return ok
 	default:
 		return true
 	}

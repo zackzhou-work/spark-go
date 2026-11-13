@@ -54,6 +54,16 @@ func CursorDeeplink(composerID string) (string, bool) {
 	return u.String(), true
 }
 
+// AntigravityDeeplink raises the Antigravity 2.0 desktop window without resetting its
+// active conversation route to the home screen. Antigravity does not expose a per-session
+// deep link, so conversationID only validates that the row addresses a real session UUID
+func AntigravityDeeplink(conversationID string) (string, bool) {
+	if !isUUIDShape(conversationID) {
+		return "", false
+	}
+	return "antigravity://focus", true
+}
+
 // isCodexThreadID checks UUID shape: 8-4-4-4-12 hexadecimal
 func isCodexThreadID(id string) bool {
 	return isUUIDShape(id)

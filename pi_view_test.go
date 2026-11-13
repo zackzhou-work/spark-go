@@ -257,6 +257,8 @@ func TestWaitingCardUsesTheSourceName(t *testing.T) {
 	claude := monitor.SessionItem{ID: "local_1", Title: "t", State: monitor.Waiting, WaitReason: monitor.WaitPermission}
 	codex := monitor.SessionItem{ID: "01a1", Source: monitor.SourceCodex, Title: "t", State: monitor.Waiting}
 	pi := monitor.SessionItem{ID: "abc", Source: monitor.SourcePi, Title: "t", State: monitor.Waiting, WaitReason: monitor.WaitQuestion}
+	agPerm := monitor.SessionItem{ID: "11111111-1111-4111-8111-111111111111", Source: monitor.SourceAntigravity, Title: "t", State: monitor.Waiting, WaitReason: monitor.WaitPermission}
+	agQ := monitor.SessionItem{ID: "22222222-2222-4222-8222-222222222222", Source: monitor.SourceAntigravity, Title: "t", State: monitor.Waiting, WaitReason: monitor.WaitQuestion}
 
 	if got := answerLabel(claude); got != "Respond in Claude" {
 		t.Errorf("Claude = %q", got)
@@ -266,6 +268,12 @@ func TestWaitingCardUsesTheSourceName(t *testing.T) {
 	}
 	if got := answerLabel(pi); got != "Answer in pi" {
 		t.Errorf("pi = %q", got)
+	}
+	if got := answerLabel(agPerm); got != "Respond in Antigravity" {
+		t.Errorf("Antigravity perm = %q", got)
+	}
+	if got := answerLabel(agQ); got != "Answer in Antigravity" {
+		t.Errorf("Antigravity question = %q", got)
 	}
 }
 
@@ -280,6 +288,8 @@ func TestJumpable(t *testing.T) {
 		{"codex", monitor.SessionItem{Source: monitor.SourceCodex}, true},
 		{"pi in herdr", monitor.SessionItem{Source: monitor.SourcePi, Terminal: "t1"}, true},
 		{"pi elsewhere", monitor.SessionItem{Source: monitor.SourcePi}, false},
+		{"antigravity valid id", monitor.SessionItem{Source: monitor.SourceAntigravity, ID: "11111111-1111-4111-8111-111111111111"}, true},
+		{"antigravity invalid id", monitor.SessionItem{Source: monitor.SourceAntigravity, ID: "not-a-uuid"}, false},
 	}
 	for _, c := range cases {
 		if got := c.item.Jumpable(); got != c.want {

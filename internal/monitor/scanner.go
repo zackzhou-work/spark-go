@@ -74,6 +74,10 @@ type Scanner struct {
 	CursorUserDir    string
 	CursorEventsRoot string
 
+	AntigravityDB    string
+	AntigravityProto string
+	AntigravityBrain string
+
 	cursorSnap     cursorSnapshot
 	cursorLog      CursorEventLog
 	cursorEvents   map[string][]CursorEvent
@@ -85,6 +89,10 @@ type Scanner struct {
 	cursorPrunedAt time.Time
 	cursorSawEvent bool
 	cursorStates   map[string]TaskState
+
+	antigravitySnap       antigravitySnapshot
+	antigravityCache      map[string]antigravityTranscriptCacheEntry
+	antigravityAssumeLive bool
 }
 
 func NewScanner() *Scanner {
@@ -108,6 +116,10 @@ func NewScanner() *Scanner {
 		CursorDB:         CursorGlobalDBPath(home),
 		CursorUserDir:    CursorUserDir(home),
 		CursorEventsRoot: CursorEventsDir(home),
+
+		AntigravityDB:    AntigravityDBPath(home),
+		AntigravityProto: AntigravityProtoPath(home),
+		AntigravityBrain: AntigravityBrainDir(home),
 	}
 }
 
@@ -302,6 +314,7 @@ func (s *Scanner) scanAll(now time.Time) []ProjectGroup {
 	found = append(found, s.scanCodex(now)...)
 	found = append(found, s.scanPi(now)...)
 	found = append(found, s.scanCursor(now)...)
+	found = append(found, s.scanAntigravity(now)...)
 	// Only a scan notices the receipts left behind by pi processes that are gone
 	s.pruneReceipts(now)
 	s.pruneCursorEvents(now)

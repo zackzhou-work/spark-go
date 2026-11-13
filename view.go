@@ -98,9 +98,9 @@ const (
 	// minWidth is as narrow as the window goes; past it even the narrow cards stop fitting
 	minWidth = 260
 
-	// The working spinner: 30 frames reads clearly without redrawing at the display's rate
+	// The working spinner repaints at a lower rate than the display to save CPU
 	spinPeriod = 900 * time.Millisecond
-	spinTick   = 33 * time.Millisecond
+	spinTick   = 66 * time.Millisecond
 
 	rowHoverFade = 140 * time.Millisecond
 
@@ -1441,6 +1441,8 @@ func jumpToSession(c *ui.Context, s monitor.SessionItem) {
 		url, ok = monitor.CodexDeeplink(s.ID)
 	case monitor.SourceCursor:
 		url, ok = monitor.CursorDeeplink(s.ID)
+	case monitor.SourceAntigravity:
+		url, ok = monitor.AntigravityDeeplink(s.ID)
 	default:
 		url, ok = monitor.SessionDeeplink(s.ID)
 	}

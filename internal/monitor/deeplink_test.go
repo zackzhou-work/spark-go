@@ -52,3 +52,20 @@ func TestCodexDeeplinkValidatesThreadID(t *testing.T) {
 		}
 	}
 }
+
+func TestAntigravityDeeplinkValidatesConversationID(t *testing.T) {
+	got, ok := AntigravityDeeplink("ffc30d09-7444-4f2a-9cce-69338a973b37")
+	if !ok || got != "antigravity://focus" {
+		t.Errorf("got %q ok=%v", got, ok)
+	}
+	for _, id := range []string{
+		"",
+		"not-a-uuid",
+		"ffc30d09-7444-4f2a-9cce",
+		"zzzzzzzz-7444-4f2a-9cce-69338a973b37",
+	} {
+		if _, ok := AntigravityDeeplink(id); ok {
+			t.Errorf("%q should be rejected", id)
+		}
+	}
+}
