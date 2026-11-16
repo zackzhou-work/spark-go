@@ -252,7 +252,33 @@ const (
 // spill a little past the box, so leave room around it. The cast decides which character a
 // project gets; a project missing from it falls back to its own name
 func (a *app) avatar(c *ui.Context, project string, m mood, p prop, size float32) ui.Element {
-	return avatarOf(c, a.character(project), projectSeed(project), m, p, size).Label(project)
+	return a.projectAvatar(c, project, bucketNone, m, p, p.ring, size)
+}
+
+func (a *app) projectAvatar(c *ui.Context, project string, bucket todayBucket, m mood, p prop, ground ui.Color, size float32) ui.Element {
+	box := ui.Box(c).Size(size, size).Label(project)
+	if bucket != bucketNone {
+		if h := a.hero.slotHandle(project, bucket); h != nil {
+			box.Bind(h)
+		}
+		a.hero.syncFlightTarget(c, project, bucket, m, p, ground)
+	}
+	wx, wy, _ := c.Root().PointerPosition()
+	still := c.Preferences().ReduceMotion
+	darkGround := c.Theme().Dark
+	seed := projectSeed(project)
+	ch := a.character(project)
+
+	return box.Draw(func(pt *ui.Painter, r ui.Rect) {
+		if bucket != bucketNone {
+			a.hero.recordPaint(project, bucket, r, ground)
+			if a.hero.isFlying(project) {
+				return
+			}
+		}
+		shown, morphing := a.moods.eval(project, pt.Now(), m, still)
+		paintProjectAvatarFrame(pt, r, wx-r.X, wy-r.Y, true, ch, seed, shown, morphing, p, size, darkGround, still)
+	})
 }
 
 // avatarOf draws one given character; the seed only staggers when each character blinks
@@ -269,27 +295,34 @@ func avatarOf(c *ui.Context, ch character, seed uint32, m mood, p prop, size flo
 		}
 		shown[i] = box.AnimateWith(i, target, faceShift, ui.EaseInOut)
 	}
+	wx, wy, _ := c.Root().PointerPosition()
 	still := c.Preferences().ReduceMotion
 	darkGround := c.Theme().Dark
 
 	return box.Draw(func(pt *ui.Painter, r ui.Rect) {
-		pose := settle(shown)
-		pose.darkGround = darkGround
-		if !still {
-			idle(&pose, seed, pt.Now())
-			// a pointer passing close turns the face toward it, easing out of the drift
-			x, y, _ := box.PointerPosition()
-			share := pose.applyPointer(x-r.W/2, y-r.H/2, size)
-			if share > 0 || pose.fastMotion || pose.blink < 0.99 {
-				// fast saccades, blinks, spins, and pointer tracking need display-synced frames;
-				// ambient dwell can sleep on the drift timer
-				pt.AnimationFrame()
-			} else {
-				pt.After(frameFor(pose.mood))
-			}
-		}
-		paintAvatar(pt, r, ch, pose, p)
+		paintProjectAvatarFrame(pt, r, wx-r.X, wy-r.Y, true, ch, seed, shown, false, p, size, darkGround, still)
 	})
+}
+
+func paintProjectAvatarFrame(pt *ui.Painter, r ui.Rect, px, py float32, trackPointer bool, ch character, seed uint32, shown [moodCount]float32, morphing bool, p prop, size float32, darkGround, still bool) {
+	pose := settle(shown)
+	pose.darkGround = darkGround
+	if !still {
+		idle(&pose, seed, pt.Now())
+		var share float32
+		if trackPointer {
+			// a pointer passing close turns the face toward it, easing out of the drift
+			share = pose.applyPointer(px-r.W/2, py-r.H/2, size)
+		}
+		if morphing || share > 0 || pose.fastMotion || pose.blink < 0.99 {
+			// fast saccades, blinks, spins, mood shifts, and pointer tracking need display-synced frames;
+			// ambient dwell can sleep on the drift timer
+			pt.AnimationFrame()
+		} else {
+			pt.After(frameFor(pose.mood))
+		}
+	}
+	paintAvatar(pt, r, ch, pose, p)
 }
 
 // pose is what gets drawn at one instant
