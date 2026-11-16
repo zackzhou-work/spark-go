@@ -270,8 +270,9 @@ func (a *app) characterButton(c *ui.Context, p palette, g monitor.ProjectGroup, 
 	// Focus comes back to the avatar as the dialog closes, so the hint follows the keyboard
 	// focus rather than any focus: a pointer that just pressed Save or Cancel left none to show
 	hint := btn.Animate("hint", lit(btn.Hovered() || btn.FocusVisible()), rowHoverFade)
-	if hint > 0 {
-		btn.Background(p.fill.Alpha(hint))
+	press := btn.Animate("press", lit(btn.Pressed()), pressFadeDuration)
+	if hint > 0 || press > 0 {
+		btn.Background(p.fill.Alpha(hint).Mix(p.fillPress, press))
 	}
 	btn.OnClick(func() { a.openCharacterEditor(g.ProjectName) })
 	btn.Children(func() {
@@ -291,9 +292,13 @@ func (a *app) characterButton(c *ui.Context, p palette, g monitor.ProjectGroup, 
 
 // characterEditor is the modal the project page's avatar opens: the draft as it would look,
 // the shapes and colours to try, and Cancel and Save
-func (a *app) characterEditor(c *ui.Context, p palette) {
+func (a *app) characterEditor(c *ui.Context, p palette, progress float32) {
 	d := a.editor
+	interactive := d != nil
 	if d == nil {
+		d = a.lastEditor
+	}
+	if d == nil || progress <= 0.005 {
 		return
 	}
 	d.still = c.Preferences().ReduceMotion
@@ -305,23 +310,26 @@ func (a *app) characterEditor(c *ui.Context, p palette) {
 	room := h - bar - editorMargin
 	m := fitEditor(room)
 
-	open := true
-	ui.DialogBase(c, &open, func(back, panel ui.Element) {
+	build := func(back, panel ui.Element) {
 		// The window behind is dimmed rather than removed: the character being replaced stays
 		// in sight next to its draft, and the title bar keeps to itself
-		back.Background(p.bg.Alpha(0.55)).Padding(bar, editorMargin, editorMargin, editorMargin)
+		back.Background(p.bg.Alpha(0.55*progress)).Padding(bar, editorMargin, editorMargin, editorMargin)
 		// A short window opens the panel at the room it has and scrolls the choices, so the
 		// title, the buttons and the error stay in reach
-		panel.Bind(&a.editorPanel).Column().Width(width).Height(max(min(m.height(), room), 160)).
-			Radius(22).Border(1, p.line).Background(p.bg).Shadow(0, 20, 70, 0, ui.Hex("#000000").Alpha(0.16)).Clip()
+		panel.Column().Width(width).Height(max(min(m.height(), room), 160)).
+			Radius(22).Border(1, p.line).Background(p.bg).Shadow(0, 20, 70, 0, ui.Hex("#000000").Alpha(0.16)).Clip().
+			Opacity(progress).Top(14 * (1 - progress))
+		if interactive {
+			panel.Bind(&a.editorPanel)
+		}
 
 		ui.Row(c).Padding(editorHeadPad, 24, 0, 24).Gap(8).Children(func() {
 			ui.Text(c, "Custom character").Grow(1).FontSize(16).FontWeight(620).LetterSpacing(-0.4).TextColor(p.strong)
-			close := ui.ButtonBase(c).Size(editorClose, editorClose).Radius(editorClose / 2).Label("Close").Disabled(d.saving)
-			if close.Hovered() {
-				close.Background(p.fill)
+			close := ui.ButtonBase(c).Size(editorClose, editorClose).Radius(editorClose / 2).Label("Close").Disabled(d.saving || !interactive)
+			close.Background(animatedStateColor(close, "close", ui.Transparent, p.fill, p.fillPress, interactive && !d.saving))
+			if interactive {
+				close.OnClick(func() { a.closeCharacterEditor() })
 			}
-			close.OnClick(func() { a.closeCharacterEditor() })
 			close.Children(func() { ui.Icon(c, closeIcon).Size(13, 13).TextColor(p.sec) })
 		})
 
@@ -350,13 +358,29 @@ func (a *app) characterEditor(c *ui.Context, p palette) {
 			if msg := a.editorMessage(d); msg != "" {
 				ui.Text(c, msg).Grow(1).FontSize(11).LineHeight(1.4).TextColor(p.ink)
 			}
-			cancel := editorButton(c, p, "Cancel", false, editorPill, 13).Disabled(d.saving)
-			cancel.OnClick(func() { a.closeCharacterEditor() })
-			save := editorButton(c, p, "Save", true, editorPill, 13).MinWidth(72).Disabled(d.saving || a.charactersErr != nil)
-			save.OnClick(func() { a.saveCharacterEditor() })
+			cancel := editorButton(c, p, "Cancel", false, editorPill, 13).Disabled(d.saving || !interactive)
+			save := editorButton(c, p, "Save", true, editorPill, 13).MinWidth(72).Disabled(d.saving || a.charactersErr != nil || !interactive)
+			if interactive {
+				cancel.OnClick(func() { a.closeCharacterEditor() })
+				save.OnClick(func() { a.saveCharacterEditor() })
+			}
 		})
-		a.updateGaze(c, panel, d)
-	})
+		if interactive {
+			a.updateGaze(c, panel, d)
+		}
+	}
+
+	if !interactive {
+		back := ui.Box(c).Absolute().Fill().Center().PassThrough()
+		back.Children(func() {
+			panel := ui.Box(c).PassThrough()
+			panel.Children(func() { build(back, panel) })
+		})
+		return
+	}
+
+	open := true
+	ui.DialogBase(c, &open, build)
 
 	// Escape and a press on the backdrop ask to close; while the file is being written the
 	// dialog waits, so spark never says it cancelled and then saves anyway
@@ -467,17 +491,11 @@ func (a *app) colourCell(c *ui.Context, p palette, d *characterDraft, hue int, m
 // the dialog can be used without a pointer
 func editorButton(c *ui.Context, p palette, label string, primary bool, height, size float32) ui.Element {
 	btn := ui.ButtonBase(c).Height(height).Padding(0, height/2-2).Radius(height / 2).Label(label)
-	bg, fg := p.fill, p.ink
+	bg, hover, press, fg := p.fill, p.pillHover, p.pillPress, p.ink
 	if primary {
-		bg, fg = p.primary, p.onPrimary
+		bg, hover, press, fg = p.primary, p.primaryHover, p.primaryPress, p.onPrimary
 	}
-	if btn.Hovered() {
-		bg = p.pillHover
-		if primary {
-			bg = p.primaryHover
-		}
-	}
-	btn.Background(bg)
+	btn.Background(animatedStateColor(btn, "btn", bg, hover, press, true))
 	btn.Children(func() {
 		ui.Text(c, label).FontSize(size).FontWeight(510).TextColor(fg)
 	})

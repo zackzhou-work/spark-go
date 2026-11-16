@@ -42,33 +42,40 @@ type palette struct {
 	bg               ui.Color
 	ink, strong, sec ui.Color
 	// tileHot is a card that needs you, tile is any other card
-	tileHot, tile        ui.Color
-	fill, rowHover       ui.Color
-	pillHover            ui.Color
-	primary, onPrimary   ui.Color
-	primaryHover         ui.Color
-	edge, hairline, line ui.Color
-	shadow               ui.Color
+	tileHot, tile              ui.Color
+	tileHotHover, tileHotPress ui.Color
+	tileHover, tilePress       ui.Color
+	fill, fillHover, fillPress ui.Color
+	rowHover, rowPress         ui.Color
+	pillHover, pillPress       ui.Color
+	primary, onPrimary         ui.Color
+	primaryHover, primaryPress ui.Color
+	edge, hairline, line       ui.Color
+	shadow                     ui.Color
 }
 
 var (
 	lightPalette = palette{
 		bg:  ui.Hex("#FFFFFF"),
 		ink: ui.Hex("#34322D"), strong: ui.Hex("#0D0D0D"), sec: ui.Hex("#858481"),
-		tileHot: ui.Hex("#F4F4F4"), tile: ui.Hex("#F8F8F7"),
-		fill: ui.Hex("#37352F").Alpha(0.06), rowHover: ui.Hex("#37352F").Alpha(0.04),
-		pillHover: ui.Hex("#37352F").Alpha(0.1),
-		primary:   ui.Hex("#1A1A19"), onPrimary: ui.Hex("#FFFFFF"), primaryHover: ui.Hex("#3A3A38"),
+		tileHot: ui.Hex("#F4F4F4"), tileHotHover: ui.Hex("#ECECEB"), tileHotPress: ui.Hex("#E2E2E0"),
+		tile: ui.Hex("#F8F8F7"), tileHover: ui.Hex("#F0F0EE"), tilePress: ui.Hex("#E6E6E3"),
+		fill: ui.Hex("#37352F").Alpha(0.06), fillHover: ui.Hex("#37352F").Alpha(0.1), fillPress: ui.Hex("#37352F").Alpha(0.15),
+		rowHover: ui.Hex("#37352F").Alpha(0.04), rowPress: ui.Hex("#37352F").Alpha(0.08),
+		pillHover: ui.Hex("#37352F").Alpha(0.1), pillPress: ui.Hex("#37352F").Alpha(0.15),
+		primary: ui.Hex("#1A1A19"), onPrimary: ui.Hex("#FFFFFF"), primaryHover: ui.Hex("#3A3A38"), primaryPress: ui.Hex("#0D0D0C"),
 		edge: ui.Hex("#000000").Alpha(0.12), hairline: ui.Hex("#000000").Alpha(0.12), line: ui.Hex("#000000").Alpha(0.08),
 		shadow: ui.Hex("#000000").Alpha(0.04),
 	}
 	darkPalette = palette{
 		bg:  ui.Hex("#1A1918"),
 		ink: ui.Hex("#E6E4DF"), strong: ui.Hex("#F7F6F2"), sec: ui.Hex("#9B9993"),
-		tileHot: ui.Hex("#2B2A27"), tile: ui.Hex("#232220"),
-		fill: ui.Hex("#FFFFFF").Alpha(0.08), rowHover: ui.Hex("#FFFFFF").Alpha(0.05),
-		pillHover: ui.Hex("#FFFFFF").Alpha(0.12),
-		primary:   ui.Hex("#F2F1ED"), onPrimary: ui.Hex("#1A1918"), primaryHover: ui.Hex("#D9D7D2"),
+		tileHot: ui.Hex("#2B2A27"), tileHotHover: ui.Hex("#34332F"), tileHotPress: ui.Hex("#22211F"),
+		tile: ui.Hex("#232220"), tileHover: ui.Hex("#2B2A28"), tilePress: ui.Hex("#1B1A18"),
+		fill: ui.Hex("#FFFFFF").Alpha(0.08), fillHover: ui.Hex("#FFFFFF").Alpha(0.13), fillPress: ui.Hex("#FFFFFF").Alpha(0.04),
+		rowHover: ui.Hex("#FFFFFF").Alpha(0.05), rowPress: ui.Hex("#000000").Alpha(0.12),
+		pillHover: ui.Hex("#FFFFFF").Alpha(0.12), pillPress: ui.Hex("#FFFFFF").Alpha(0.05),
+		primary: ui.Hex("#F2F1ED"), onPrimary: ui.Hex("#1A1918"), primaryHover: ui.Hex("#D9D7D2"), primaryPress: ui.Hex("#C4C2BC"),
 		edge: ui.Hex("#FFFFFF").Alpha(0.12), hairline: ui.Hex("#FFFFFF").Alpha(0.1), line: ui.Hex("#FFFFFF").Alpha(0.1),
 		shadow: ui.Hex("#000000").Alpha(0.3),
 	}
@@ -182,6 +189,11 @@ type app struct {
 	characterEntry ui.Handle
 	editorPanel    ui.Handle
 	editorPreview  ui.Handle
+
+	moods       moodTracker
+	hero        heroCoordinator
+	lastProject string
+	lastEditor  *characterDraft
 }
 
 func (a *app) view(c *ui.Context) {
@@ -201,49 +213,104 @@ func (a *app) view(c *ui.Context) {
 		}
 	}
 
-	ui.Column(c).Fill().Radius(12).Border(1, p.edge).Background(p.bg).TextColor(p.ink).Clip().Children(func() {
-		a.titleBar(c, p, l)
-		if g, ok := a.openProject(); ok {
-			a.projectPage(c.Key("project:"+g.ProjectName), p, g)
-		} else {
-			a.pages(c, p, l)
+	frame := ui.Column(c).Fill().Radius(12).Border(1, p.edge).Background(p.bg).TextColor(p.ink).Clip()
+	openGroup, hasOpen := a.openProject()
+	if hasOpen {
+		a.lastProject = openGroup.ProjectName
+	}
+	slide := frame.AnimateWith("project-slide", bool01(hasOpen), slideDuration, slideEase)
+	if !hasOpen && slide <= 0.005 {
+		a.lastProject = ""
+	}
+	if hasOpen || a.filter != filterToday {
+		a.hero.reset()
+	}
+	toastActive := false
+	if !a.savedAt.IsZero() {
+		if left := toastSpan - time.Since(a.savedAt); left > 0 {
+			toastActive = true
+			c.After(left)
 		}
+	}
+	toastProgress := frame.AnimateWith("toast-fade", bool01(toastActive), overlayFadeDuration, ui.EaseOut)
+	if a.editor != nil {
+		snap := *a.editor
+		a.lastEditor = &snap
+	}
+	editorProgress := frame.AnimateWith("editor-open", bool01(a.editor != nil), overlayFadeDuration, ui.EaseOut)
+	if a.editor == nil && editorProgress <= 0.001 {
+		a.lastEditor = nil
+	}
+
+	frame.Children(func() {
+		a.titleBar(c, p, l)
+		ui.Box(c).Grow(1).FillWidth().Clip().Children(func() {
+			if !hasOpen || slide < 0.999 {
+				bgLayer := ui.Box(c).Key("stage-list").Absolute().Fill().LeftPercent(-30 * slide)
+				if hasOpen {
+					bgLayer.PassThrough()
+				}
+				bgLayer.Children(func() {
+					a.pages(c, p, l)
+				})
+				if slide > 0.005 {
+					ui.Box(c).Key("stage-scrim").Absolute().Fill().PassThrough().Background(p.bg.Alpha(0.55 * slide))
+				}
+			}
+			if hasOpen || slide > 0.005 {
+				target, ok := openGroup, hasOpen
+				if !ok {
+					target, ok = a.projectByName(a.lastProject)
+				}
+				if ok {
+					layer := ui.Box(c).Key("stage-project").Absolute().Fill().Background(p.bg).LeftPercent(100 * (1 - slide))
+					if slide > 0.005 && slide < 0.999 {
+						layer.Shadow(-4, 0, 16, 0, p.shadow)
+					}
+					if !hasOpen {
+						layer.PassThrough()
+					}
+					layer.Children(func() {
+						a.projectPage(c.Key("project:"+target.ProjectName), p, target)
+					})
+				}
+			}
+		})
 		ui.Box(c).Absolute().Bottom(3).Right(3).Size(14, 14).Center().Cursor(ui.CursorResizeNWSE).Children(func() {
 			ui.Icon(c, resizeGripIcon).Size(10, 10).TextColor(p.sec.Alpha(0.5))
 		})
-		a.savedToast(c, p)
+		a.savedToast(c, p, toastProgress)
 	})
-	a.characterEditor(c, p)
+	a.characterEditor(c, p, editorProgress)
 }
 
-// savedToast confirms a save for a moment, then takes itself away with one more frame
-func (a *app) savedToast(c *ui.Context, p palette) {
-	if a.savedAt.IsZero() {
+// savedToast confirms a save for a moment, then fades out cleanly
+func (a *app) savedToast(c *ui.Context, p palette, progress float32) {
+	if progress <= 0.005 {
 		return
 	}
-	left := toastSpan - time.Since(a.savedAt)
-	if left <= 0 {
-		return
-	}
-	// One frame at the end takes the confirmation away
-	c.After(left)
-	ui.Row(c).Absolute().Left(0).Right(0).Bottom(22).Justify(ui.Center).PassThrough().Children(func() {
+	offset := 10 * (1 - progress)
+	ui.Row(c).Absolute().Left(0).Right(0).Bottom(22 - offset).Justify(ui.Center).PassThrough().Opacity(progress).Children(func() {
 		ui.Row(c).Height(36).Padding(0, 18).Radius(18).Center().Background(p.primary).Children(func() {
 			ui.Text(c, "Character saved").FontSize(12).FontWeight(510).TextColor(p.onPrimary)
 		})
 	})
 }
 
-func (a *app) openProject() (monitor.ProjectGroup, bool) {
-	if a.project == "" {
+func (a *app) projectByName(name string) (monitor.ProjectGroup, bool) {
+	if name == "" {
 		return monitor.ProjectGroup{}, false
 	}
 	for _, g := range a.groups {
-		if g.ProjectName == a.project {
+		if g.ProjectName == name {
 			return g, true
 		}
 	}
 	return monitor.ProjectGroup{}, false
+}
+
+func (a *app) openProject() (monitor.ProjectGroup, bool) {
+	return a.projectByName(a.project)
 }
 
 func (a *app) titleBar(c *ui.Context, p palette, l layout) {
@@ -276,8 +343,8 @@ func (a *app) tabs(c *ui.Context, p palette, l layout) {
 		widths[i] = float32(math.Ceil(float64(textWidth(shaped(label, size, 510))))) + 2*pad
 	}
 
-	seg := ui.SegmentedBase(c, &a.filter, 2)
-	track := seg.Track.Gap(gap).Label("Filter")
+	seg := ui.SegmentedBase(c.Key("header-tabs"), &a.filter, 2)
+	track := seg.Track.Gap(gap).Label("Filter").Transition(tabsTransition)
 	// The selection is a pill drawn on the track, sliding with the pages on the same curve
 	x := track.AnimateWith("thumb-x", float32(a.filter)*(widths[0]+gap), slideDuration, slideEase)
 	w := track.AnimateWith("thumb-w", widths[a.filter], slideDuration, slideEase)
@@ -287,9 +354,7 @@ func (a *app) tabs(c *ui.Context, p palette, l layout) {
 	track.Children(func() {
 		for i, label := range labels {
 			s := seg.Segment(i).Size(widths[i], height).Center().Radius(height / 2).Cursor(ui.CursorPointer).Label(label)
-			if i != a.filter && s.Hovered() {
-				s.Background(p.rowHover)
-			}
+			s.Background(animatedStateColor(s, "tab", ui.Transparent, p.rowHover, p.rowPress, i != a.filter))
 			s.Children(func() {
 				ui.Text(c, label).FontSize(size).FontWeight(510)
 			})
@@ -299,9 +364,7 @@ func (a *app) tabs(c *ui.Context, p palette, l layout) {
 
 func (a *app) pinButton(c *ui.Context, p palette, size, icon float32) {
 	pin := ui.Box(c).Size(size, size).Center().Radius(size / 2).Cursor(ui.CursorPointer).Label("Keep window on top")
-	if pin.Hovered() {
-		pin.Background(p.fill)
-	}
+	pin.Background(animatedStateColor(pin, "pin", ui.Transparent, p.fill, p.fillPress, true))
 	pin.OnClick(func() {
 		a.pinned = !a.pinned
 		if a.win != nil {
@@ -345,60 +408,90 @@ func (a *app) pages(c *ui.Context, p palette, l layout) {
 
 func (a *app) todayPage(c *ui.Context, p palette, l layout, width float32) {
 	today := monitor.TodayGroups(a.groups)
+	page := ui.Box(c).Width(width).FillHeight().Bind(&a.hero.layerHandle)
+
 	if len(today) == 0 {
-		a.emptyState(c, p, l, filterToday, width)
+		a.hero.reset()
+		page.Children(func() {
+			ui.Box(c).Key("today-empty").Absolute().Fill().Transition(fadeTransition).Children(func() {
+				a.emptyState(c, p, l, filterToday, width)
+			})
+		})
 		return
 	}
+
 	cards := projectCards(today)
 	needs, rest := splitNeeds(cards)
 	recent := ordered(unwaited(today))
 	now := time.Now()
+	buckets := make(map[string]todayBucket, len(cards))
+	for _, card := range needs {
+		buckets[card.group.ProjectName] = bucketNeeds
+	}
+	for _, card := range rest {
+		buckets[card.group.ProjectName] = bucketRest
+	}
+	still := c.Preferences().ReduceMotion
+	dark := c.Theme().Dark
+	a.hero.beginToday(int(l), width, still, buckets)
 
-	scroller(c).Width(width).Children(func() {
-		if l == layoutNarrow {
-			ui.Column(c).Padding(0, 10).Gap(8).Children(func() {
-				pageHeading(c, p, l, "Your agents, today.")
-				a.piSetupNotice(c, p)
-				a.cursorSetupNotice(c, p)
-				for _, card := range needs {
-					a.needsStack(c.Key(card.group.ProjectName), p, card)
-				}
-				if len(rest) > 0 {
-					ui.Column(c).Background(p.tile).Radius(20).Padding(4).Children(func() {
-						for _, card := range rest {
-							a.projectRow(c.Key(card.group.ProjectName), p, card)
+	page.Children(func() {
+		ui.Box(c).Key("today-content").Absolute().Fill().Transition(fadeTransition).Children(func() {
+			scroller(c).Width(width).FillHeight().Children(func() {
+				if l == layoutNarrow {
+					ui.Column(c).Key("today-cards").Padding(0, 10).Gap(8).Transition(reflowTransition).Children(func() {
+						pageHeading(c, p, l, "Your agents, today.")
+						a.piSetupNotice(c, p)
+						a.cursorSetupNotice(c, p)
+						for _, card := range needs {
+							a.needsStack(c.Key("needs:"+card.group.ProjectName), p, card)
+						}
+						if len(rest) > 0 {
+							ui.Column(c).Key("rest-card").Transition(collapseTransition).Clip().Background(p.tile).Radius(20).Padding(4).Children(func() {
+								for _, card := range rest {
+									a.projectRow(c.Key("rest:"+card.group.ProjectName), p, card)
+								}
+							})
 						}
 					})
-				}
-			})
-			if len(recent) > 0 {
-				ui.Column(c).Padding(14, 6, 16, 6).Children(func() {
-					sectionLabel(c, p, "Recent").Padding(0, 8, 6, 8)
-					for _, s := range recent {
-						sessionRow(c.Key(sessionKey(s)), p, s, narrowRows, now)
+					if len(recent) > 0 {
+						ui.Column(c).Key("recent-section").Transition(collapseTransition).Padding(14, 6, 16, 6).Children(func() {
+							sectionLabel(c, p, "Recent").Padding(0, 8, 6, 8)
+							for _, s := range recent {
+								sessionRow(c.Key("row:"+sessionKey(s)), p, s, narrowRows, now)
+							}
+						})
 					}
-				})
-			}
-			return
-		}
-
-		ui.Column(c).Padding(4, 12, 16, 12).Children(func() {
-			pageHeading(c, p, l, "Your agents, today.")
-			a.piSetupNotice(c, p)
-			a.cursorSetupNotice(c, p)
-			ui.Column(c).Gap(8).Padding(8, 0, 0, 0).Children(func() {
-				for _, card := range needs {
-					a.needsRow(c.Key(card.group.ProjectName), p, card)
+					return
 				}
-				if len(rest) > 0 {
-					ui.Grid(c).Columns(fitColumns(width-24, 150, 8)).Gap(8).Children(func() {
-						for _, card := range rest {
-							a.smallTile(c.Key(card.group.ProjectName), p, card)
+
+				ui.Column(c).Padding(4, 12, 16, 12).Children(func() {
+					pageHeading(c, p, l, "Your agents, today.")
+					a.piSetupNotice(c, p)
+					a.cursorSetupNotice(c, p)
+					ui.Column(c).Key("today-cards").Gap(8).Padding(8, 0, 0, 0).Transition(reflowTransition).Children(func() {
+						for _, card := range needs {
+							a.needsRow(c.Key("needs:"+card.group.ProjectName), p, card)
+						}
+						if len(rest) > 0 {
+							ui.Grid(c).Key("grid:rest").Transition(collapseTransition).Clip().Columns(fitColumns(width-24, 150, 8)).Gap(8).Children(func() {
+								for _, card := range rest {
+									a.smallTile(c.Key("tile:"+card.group.ProjectName), p, card)
+								}
+							})
 						}
 					})
-				}
+					a.sessionSection(c.Key("recent"), p, "Recent", recent, now)
+				})
 			})
-			a.sessionSection(c.Key("recent"), p, "Recent", recent, now)
+		})
+		ui.Box(c).Key("hero-overlay").Absolute().Fill().PassThrough().Draw(func(pt *ui.Painter, layerR ui.Rect) {
+			frames := a.hero.advanceOverlay(pt, layerR, still)
+			for _, hf := range frames {
+				shown, morphing := a.moods.eval(hf.project, pt.Now(), hf.destMood, still)
+				pr := dressed(hf.destProp, p, hf.ground)
+				paintProjectAvatarFrame(pt, hf.rect, 0, 0, false, a.character(hf.project), projectSeed(hf.project), shown, morphing, pr, hf.rect.W, dark, still)
+			}
 		})
 	})
 }
@@ -421,30 +514,39 @@ func splitNeeds(cards []projectCard) (needs, rest []projectCard) {
 }
 
 func (a *app) allPage(c *ui.Context, p palette, l layout, width float32) {
+	page := ui.Box(c).Width(width).FillHeight()
 	if len(a.groups) == 0 {
-		a.emptyState(c, p, l, filterAll, width)
+		page.Children(func() {
+			ui.Box(c).Key("all-empty").Absolute().Fill().Transition(fadeTransition).Children(func() {
+				a.emptyState(c, p, l, filterAll, width)
+			})
+		})
 		return
 	}
 	now := time.Now()
-	scroller(c).Width(width).Children(func() {
-		ui.Column(c).Padding(4, 12, 16, 12).Children(func() {
-			header := ui.Row(c).Padding(0, 4, 14, 4).Justify(ui.SpaceBetween).AlignItems(ui.End).Gap(8)
-			if l == layoutNarrow {
-				header.Padding(0, 4, 10, 4).Wrap()
-			}
-			header.Children(func() {
-				pageHeading(c, p, l, "Every agent.").Padding(0)
-				ui.Text(c, plural(len(a.groups), "project")+" · "+plural(monitor.CountSessions(a.groups), "session")).
-					FontSize(12).LineHeight(1.5).FontFeatures("tnum").TextColor(p.sec)
+	page.Children(func() {
+		ui.Box(c).Key("all-content").Absolute().Fill().Transition(fadeTransition).Children(func() {
+			scroller(c).Width(width).FillHeight().Children(func() {
+				ui.Column(c).Padding(4, 12, 16, 12).Children(func() {
+					header := ui.Row(c).Padding(0, 4, 14, 4).Justify(ui.SpaceBetween).AlignItems(ui.End).Gap(8)
+					if l == layoutNarrow {
+						header.Padding(0, 4, 10, 4).Wrap()
+					}
+					header.Children(func() {
+						pageHeading(c, p, l, "Every agent.").Padding(0)
+						ui.Text(c, plural(len(a.groups), "project")+" · "+plural(monitor.CountSessions(a.groups), "session")).
+							FontSize(12).LineHeight(1.5).FontFeatures("tnum").TextColor(p.sec)
+					})
+					ui.Grid(c).Columns(fitColumns(width-24, 100, 8)).Gap(8).Children(func() {
+						for _, card := range projectCards(a.groups) {
+							a.castTile(c.Key("cast:"+card.group.ProjectName), p, card)
+						}
+					})
+					for _, day := range byDay(ordered(unwaited(a.groups)), now) {
+						a.sessionSection(c.Key("day:"+day.label), p, day.label, day.sessions, now)
+					}
+				})
 			})
-			ui.Grid(c).Columns(fitColumns(width-24, 100, 8)).Gap(8).Children(func() {
-				for _, card := range projectCards(a.groups) {
-					a.castTile(c.Key(card.group.ProjectName), p, card)
-				}
-			})
-			for _, day := range byDay(ordered(unwaited(a.groups)), now) {
-				a.sessionSection(c.Key(day.label), p, day.label, day.sessions, now)
-			}
 		})
 	})
 }
@@ -472,11 +574,13 @@ func pageHeading(c *ui.Context, p palette, l layout, s string) ui.Element {
 // needsRow is a project needing you: a full row with a button on the right that returns to
 // the session
 func (a *app) needsRow(c *ui.Context, p palette, card projectCard) {
-	tile := ui.Row(c).Background(p.tileHot).Radius(tileRadius).Padding(14, 12, 14, 16).Gap(14).
-		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", needs you")
+	tile := ui.Row(c).Radius(tileRadius).Padding(14, 12, 14, 16).Gap(14).
+		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", needs you").Transition(collapseTransition)
+	tileBg := animatedStateColor(tile, "tile", p.tileHot, p.tileHotHover, p.tileHotPress, true)
+	tile.Background(tileBg)
 	tile.OnClick(func() { a.project = card.group.ProjectName })
 	tile.Children(func() {
-		a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tileHot), 40)
+		a.projectAvatar(c, card.group.ProjectName, bucketNeeds, card.mood, dressed(card.prop, p, tileBg), tileBg, 40)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Text(c, card.group.ProjectName).SingleLine().FontSize(16).LineHeight(20.0 / 16).FontWeight(510)
 			ui.Text(c, waitLine(card.waiting.WaitReason)).SingleLine().FontSize(14).LineHeight(20.0 / 14).TextColor(p.sec)
@@ -492,12 +596,14 @@ func (a *app) needsRow(c *ui.Context, p palette, card projectCard) {
 // needsStack is the narrow-window needs-you card: avatar and name on one line, the button
 // filling the next
 func (a *app) needsStack(c *ui.Context, p palette, card projectCard) {
-	tile := ui.Column(c).Background(p.tileHot).Radius(20).Padding(14).Gap(10).
-		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", needs you")
+	tile := ui.Column(c).Radius(20).Padding(14).Gap(10).
+		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", needs you").Transition(collapseTransition)
+	tileBg := animatedStateColor(tile, "tile", p.tileHot, p.tileHotHover, p.tileHotPress, true)
+	tile.Background(tileBg)
 	tile.OnClick(func() { a.project = card.group.ProjectName })
 	tile.Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
-			a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tileHot), 34)
+			a.projectAvatar(c, card.group.ProjectName, bucketNeeds, card.mood, dressed(card.prop, p, tileBg), tileBg, 34)
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				ui.Text(c, card.group.ProjectName).SingleLine().FontSize(15).LineHeight(20.0 / 15).FontWeight(510)
 				ui.Text(c, waitLine(card.waiting.WaitReason)).SingleLine().FontSize(13).LineHeight(18.0 / 13).TextColor(p.sec)
@@ -531,12 +637,14 @@ func (a *app) smallTile(c *ui.Context, p palette, card projectCard) {
 	if card.mood == moodWorking {
 		status = fmt.Sprintf("Working on %d", card.running)
 	}
-	tile := ui.Row(c).Background(p.tile).Radius(20).Padding(12, 14).Gap(12).MinWidth(0).
-		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", " + status)
+	tile := ui.Row(c).Radius(20).Padding(12, 14).Gap(12).MinWidth(0).
+		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", " + status).Transition(gridTileTransition)
+	tileBg := animatedStateColor(tile, "tile", p.tile, p.tileHover, p.tilePress, true)
+	tile.Background(tileBg)
 	tile.OnClick(func() { a.project = card.group.ProjectName })
 	tile.Children(func() {
 		ui.Box(c).Margin(0, badgeRoom(card, 30), 0, 0).Children(func() {
-			a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tile), 30)
+			a.projectAvatar(c, card.group.ProjectName, bucketRest, card.mood, dressed(card.prop, p, tileBg), tileBg, 30)
 		})
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Text(c, card.group.ProjectName).SingleLine().FontSize(14).LineHeight(20.0 / 14).FontWeight(510)
@@ -549,14 +657,16 @@ func (a *app) smallTile(c *ui.Context, p palette, card projectCard) {
 // per line
 func (a *app) projectRow(c *ui.Context, p palette, card projectCard) {
 	row := ui.Row(c).Height(44).Padding(0, 12).Gap(12).Radius(16).Cursor(ui.CursorPointer).
-		Label(card.group.ProjectName + ", " + card.status())
-	hoverFill(row, row.Hovered(), p.rowHover)
+		Label(card.group.ProjectName + ", " + card.status()).Transition(collapseTransition)
+	rowFill := animatedStateColor(row, "row", ui.Transparent, p.rowHover, p.rowPress, true)
+	row.Background(rowFill)
+	ground := rowFill.Over(p.tile)
 	row.OnClick(func() { a.project = card.group.ProjectName })
 	row.Children(func() {
 		// Every row reserves the same width for the avatar, so a badged row's name doesn't shift
 		// right
 		ui.Box(c).Width(26 + badgeRoom(projectCard{mood: moodToRead}, 26)).Children(func() {
-			a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, p.tile), 26)
+			a.projectAvatar(c, card.group.ProjectName, bucketRest, card.mood, dressed(card.prop, p, ground), ground, 26)
 		})
 		ui.Text(c, card.group.ProjectName).SingleLine().Grow(1).MinWidth(0).FontSize(14).FontWeight(510)
 		ui.Text(c, card.status()).Shrink(0).FontSize(12).TextColor(p.sec)
@@ -580,12 +690,14 @@ func badgeRoom(card projectCard, size float32) float32 {
 
 // castTile is the All page's character wall, one cell per project
 func (a *app) castTile(c *ui.Context, p palette, card projectCard) {
-	bg := p.tile
+	base, hover, press := p.tile, p.tileHover, p.tilePress
 	if card.mood == moodNeedsYou {
-		bg = p.tileHot
+		base, hover, press = p.tileHot, p.tileHotHover, p.tileHotPress
 	}
-	tile := ui.Column(c).Background(bg).Radius(tileRadius).Padding(14, 10, 12, 10).Gap(8).AlignItems(ui.Center).
-		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", " + card.status())
+	tile := ui.Column(c).Radius(tileRadius).Padding(14, 10, 12, 10).Gap(8).AlignItems(ui.Center).
+		Cursor(ui.CursorPointer).Label(card.group.ProjectName + ", " + card.status()).Transition(gridTileTransition)
+	bg := animatedStateColor(tile, "tile", base, hover, press, true)
+	tile.Background(bg)
 	tile.OnClick(func() { a.project = card.group.ProjectName })
 	tile.Children(func() {
 		a.avatar(c, card.group.ProjectName, card.mood, dressed(card.prop, p, bg), 36)
@@ -611,10 +723,8 @@ func (a *app) projectPage(c *ui.Context, p palette, g monitor.ProjectGroup) {
 	scroller(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(0, 12, 16, 12).Gap(12).Children(func() {
 			btn := ui.Row(c).AlignSelf(ui.Start).Height(32).Padding(0, 12, 0, 8).Gap(4).Radius(16).
-				Background(p.fill).Cursor(ui.CursorPointer).Label("Back to " + back)
-			if btn.Hovered() {
-				btn.Background(p.pillHover)
-			}
+				Cursor(ui.CursorPointer).Label("Back to " + back)
+			btn.Background(animatedStateColor(btn, "back", p.fill, p.pillHover, p.pillPress, true))
 			btn.OnClick(func() { a.project = "" })
 			btn.Children(func() {
 				ui.Icon(c, chevronLeftIcon).Size(16, 16).TextColor(p.ink)
@@ -632,7 +742,7 @@ func (a *app) projectPage(c *ui.Context, p palette, g monitor.ProjectGroup) {
 
 			for _, s := range g.Sessions {
 				if s.State == monitor.Waiting && !a.isSnoozed(s) {
-					a.waitingCard(c.Key(sessionKey(s)), p, s, now)
+					a.waitingCard(c.Key("wait:"+sessionKey(s)), p, s, now)
 				}
 			}
 
@@ -643,10 +753,10 @@ func (a *app) projectPage(c *ui.Context, p palette, g monitor.ProjectGroup) {
 				}
 			}
 			if len(rows) > 0 {
-				ui.Column(c).Padding(4, 0, 0, 0).Children(func() {
+				ui.Column(c).Key("project-sessions").Transition(collapseTransition).Padding(4, 0, 0, 0).Children(func() {
 					sectionLabel(c, p, "Sessions")
 					for _, s := range ordered(rows) {
-						sessionRow(c.Key(sessionKey(s)), p, s, regularRows, now)
+						sessionRow(c.Key("row:"+sessionKey(s)), p, s, regularRows, now)
 					}
 				})
 			}
@@ -668,7 +778,7 @@ func (a *app) isSnoozed(s monitor.SessionItem) bool {
 // waitingCard singles out a stuck session: what it's waiting for, how long, and buttons to
 // go handle it or put it off
 func (a *app) waitingCard(c *ui.Context, p palette, s monitor.SessionItem, now time.Time) {
-	card(c, p).Padding(16).Gap(12).Children(func() {
+	card(c, p).Transition(collapseTransition).Padding(16).Gap(12).Children(func() {
 		ui.Column(c).Gap(4).Children(func() {
 			meta := "Permission"
 			if s.WaitReason == monitor.WaitQuestion {
@@ -756,17 +866,11 @@ func card(c *ui.Context, p palette) ui.Element {
 
 func pillButton(c *ui.Context, p palette, label string, primary bool, height, size float32) ui.Element {
 	btn := ui.Row(c).Height(height).Padding(0, height/2-2).Radius(height / 2).Center().Cursor(ui.CursorPointer).Label(label)
-	bg, fg := p.fill, p.ink
+	bg, hover, press, fg := p.fill, p.pillHover, p.pillPress, p.ink
 	if primary {
-		bg, fg = p.primary, p.onPrimary
+		bg, hover, press, fg = p.primary, p.primaryHover, p.primaryPress, p.onPrimary
 	}
-	if btn.Hovered() {
-		bg = p.pillHover
-		if primary {
-			bg = p.primaryHover
-		}
-	}
-	btn.Background(bg)
+	btn.Background(animatedStateColor(btn, "pill", bg, hover, press, true))
 	btn.Children(func() {
 		ui.Text(c, label).FontSize(size).FontWeight(510).TextColor(fg)
 	})
@@ -781,11 +885,11 @@ func (a *app) sessionSection(c *ui.Context, p palette, title string, sessions []
 	if len(sessions) == 0 {
 		return
 	}
-	ui.Column(c).Padding(16, 0, 0, 0).Children(func() {
+	ui.Column(c).Transition(collapseTransition).Padding(16, 0, 0, 0).Children(func() {
 		sectionLabel(c, p, title)
 		card(c, p).Padding(6).Children(func() {
 			for _, s := range sessions {
-				sessionRow(c.Key(sessionKey(s)), p, s, regularRows, now)
+				sessionRow(c.Key("row:"+sessionKey(s)), p, s, regularRows, now)
 			}
 		})
 	})
@@ -807,18 +911,19 @@ var (
 
 func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, st rowStyle, now time.Time) {
 	row := ui.Row(c).Height(st.height).Gap(st.gap).Padding(0, st.padding).Radius(st.radius).
-		Label(s.Title + ", " + s.State.String())
+		Label(s.Title + ", " + s.State.String()).Transition(collapseTransition)
 	hovered := row.Hovered()
 	// A row is a target only where clicking goes somewhere: a pi session no terminal runs has
 	// no window for spark to show
 	if s.Jumpable() {
 		row.Cursor(ui.CursorPointer)
 		row.OnClick(func() { jumpToSession(c, s) })
-		hoverFill(row, hovered, p.rowHover)
+		row.Background(animatedStateColor(row, "row", ui.Transparent, p.rowHover, p.rowPress, true))
 	} else if reason := noJumpReason(s); reason != "" {
 		// Nothing on the row itself has room to explain the dead click, so hovering says it
 		row.Tooltip(reason)
 	}
+	arrow := row.Animate("arrow", bool01(hovered && s.Jumpable()), rowHoverFade)
 
 	when := relativeTime(s.ActivityAt, now)
 	switch {
@@ -839,8 +944,8 @@ func sessionRow(c *ui.Context, p palette, s monitor.SessionItem, st rowStyle, no
 		case monitor.Completed, monitor.Unknown:
 			title.TextColor(p.sec)
 		}
-		if when != "" || hovered {
-			trailing(c, p, hovered, when, st.meta, s)
+		if when != "" || arrow > 0.01 {
+			trailing(c, p, arrow, when, st.meta)
 		}
 		if s.State == monitor.Unread {
 			newPill(c, p, st.pill)
@@ -861,30 +966,32 @@ func noJumpReason(s monitor.SessionItem) string {
 
 // newPill is the black New at the end of an unread session row
 func newPill(c *ui.Context, p palette, height float32) {
-	ui.Row(c).Height(height).Padding(0, height*0.4).Radius(height / 2).Center().Shrink(0).Background(p.primary).Children(func() {
+	ui.Row(c).Key("new-pill").Transition(pillCollapseTransition).Height(height).Padding(0, height*0.4).Radius(height / 2).Center().Shrink(0).Background(p.primary).Children(func() {
 		ui.Text(c, "New").FontSize(height * 0.6).FontWeight(510).TextColor(p.onPrimary)
 	})
 }
 
-// hoverFill fades a row's hover background in and out instead of snapping
-func hoverFill(row ui.Element, hovered bool, color ui.Color) {
-	target := float32(0)
-	if hovered {
-		target = 1
-	}
-	if t := row.Animate("hover", target, rowHoverFade); t > 0 {
-		row.Background(color.Alpha(t))
-	}
-}
-
-// trailing shows how long ago by default, swapping to a jump arrow on hover when clicking
+// trailing shows how long ago by default, crossfading to a jump arrow on hover when clicking
 // the row goes somewhere
-func trailing(c *ui.Context, p palette, hovered bool, when string, size float32, s monitor.SessionItem) {
-	label := when
-	if hovered && s.Jumpable() {
-		label = "→"
-	}
-	ui.Text(c, label).Shrink(0).FontSize(size).FontFeatures("tnum").TextColor(p.sec)
+func trailing(c *ui.Context, p palette, arrow float32, when string, size float32) {
+	showArrow := arrow > 0.01
+	showWhen := when != "" && 1-arrow > 0.01
+	ui.Box(c).Key("trailing").Shrink(0).Transition(pillReflowTransition).Children(func() {
+		if showWhen && showArrow {
+			ui.Box(c).Shrink(0).Children(func() {
+				ui.Text(c, when).FontSize(size).FontFeatures("tnum").TextColor(p.sec).Opacity(1 - arrow)
+				ui.Row(c).Absolute().Fill().AlignItems(ui.Center).Justify(ui.End).Children(func() {
+					ui.Text(c, "→").FontSize(size).FontFeatures("tnum").TextColor(p.sec).Opacity(arrow)
+				})
+			})
+			return
+		}
+		if showArrow {
+			ui.Text(c, "→").Shrink(0).FontSize(size).FontFeatures("tnum").TextColor(p.sec).Opacity(arrow)
+			return
+		}
+		ui.Text(c, when).Shrink(0).FontSize(size).FontFeatures("tnum").TextColor(p.sec)
+	})
 }
 
 func relativeTime(t, now time.Time) string {
@@ -907,30 +1014,35 @@ func relativeTime(t, now time.Time) string {
 // marker is the leading glyph, ink only: a spinner while running, a filled dot when unread,
 // a hollow ring once seen, a solid ring when waiting on you
 func marker(c *ui.Context, p palette, state monitor.TaskState) {
-	dot := ui.Box(c).Size(markerSize, markerSize)
-	switch state {
-	case monitor.Running:
-		still := c.Preferences().ReduceMotion
-		// Not Loop: that redraws the whole window at the display's rate. Stepping on a fixed
-		// interval inside Draw repaints without rebuilding the view
-		dot.Draw(func(pt *ui.Painter, r ui.Rect) {
-			turn := float32(0)
-			if !still {
-				turn = spinPhase(pt.Now())
-				pt.After(spinTick)
+	ui.Box(c).Size(markerSize, markerSize).Children(func() {
+		holder := ui.Box(c).Key(fmt.Sprintf("marker-%d", state)).Absolute().Fill().Center().Transition(fadeTransition)
+		holder.Children(func() {
+			dot := ui.Box(c).Size(markerSize, markerSize)
+			switch state {
+			case monitor.Running:
+				still := c.Preferences().ReduceMotion
+				// Not Loop: that redraws the whole window at the display's rate. Stepping on a fixed
+				// interval inside Draw repaints without rebuilding the view
+				dot.Draw(func(pt *ui.Painter, r ui.Rect) {
+					turn := float32(0)
+					if !still {
+						turn = spinPhase(pt.Now())
+						pt.After(spinTick)
+					}
+					paintSpinner(pt, r, p, turn)
+				})
+			case monitor.Waiting:
+				dot.Radius(markerSize/2).Border(1.5, p.strong)
+			case monitor.Unread:
+				dot.Radius(markerSize / 2).Background(p.strong)
+			case monitor.Unknown:
+				// Faint and still: nothing is spinning, and nothing claims to be finished
+				dot.Radius(markerSize/2).Border(1.5, p.sec.Alpha(0.45))
+			default:
+				dot.Radius(markerSize/2).Border(1.5, p.sec)
 			}
-			paintSpinner(pt, r, p, turn)
 		})
-	case monitor.Waiting:
-		dot.Radius(markerSize/2).Border(1.5, p.strong)
-	case monitor.Unread:
-		dot.Radius(markerSize / 2).Background(p.strong)
-	case monitor.Unknown:
-		// Faint and still: nothing is spinning, and nothing claims to be finished
-		dot.Radius(markerSize/2).Border(1.5, p.sec.Alpha(0.45))
-	default:
-		dot.Radius(markerSize/2).Border(1.5, p.sec)
-	}
+	})
 }
 
 func spinPhase(now time.Time) float32 {
@@ -1006,7 +1118,7 @@ func (a *app) emptyState(c *ui.Context, p palette, l layout, filter int, width f
 	if !showBanner && cursorBody == "" {
 		cardMinHeight = max(0, height-titleBarHeight-18)
 	}
-	scroller(c).Width(width).Children(func() {
+	scroller(c).Width(width).FillHeight().Children(func() {
 		ui.Column(c).Children(func() {
 			ui.Column(c).MinHeight(cardMinHeight).Shrink(0).Margin(4, 12, 0, 12).Background(p.tileHot).Radius(tileRadius).Padding(24).Gap(24).
 				AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -1224,7 +1336,7 @@ func (a *app) cursorSetupNotice(c *ui.Context, p palette) {
 	if body == "" {
 		return
 	}
-	setupNoticeRow(c, p, body, label, func() {
+	setupNoticeRow(c.Key("notice:cursor"), p, body, label, func() {
 		if label == "Dismiss" {
 			a.dismissCursorNotice()
 			return
@@ -1252,7 +1364,7 @@ func (a *app) piSetupNotice(c *ui.Context, p palette) {
 		return
 	}
 
-	setupNoticeRow(c, p, body, label, func() {
+	setupNoticeRow(c.Key("notice:pi"), p, body, label, func() {
 		if label == "Dismiss" {
 			a.dismissPiNotice()
 			return
@@ -1272,7 +1384,7 @@ func (a *app) piSetupNotice(c *ui.Context, p palette) {
 }
 
 func setupNoticeRow(c *ui.Context, p palette, body, label string, onClick func()) {
-	ui.Row(c).Background(p.tile).Radius(14).Padding(10, 12).Gap(10).AlignItems(ui.Center).Children(func() {
+	ui.Row(c).Transition(collapseTransition).Background(p.tile).Radius(14).Padding(10, 12).Gap(10).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, body).FontSize(12).LineHeight(1.5).TextColor(p.sec).Grow(1).MinWidth(0)
 		if label == "" {
 			return
